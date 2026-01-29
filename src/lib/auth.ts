@@ -20,6 +20,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             "email",
             "profile",
             "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send", // For AI reply drafts
           ].join(" "),
         },
       },
