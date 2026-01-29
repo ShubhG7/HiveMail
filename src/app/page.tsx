@@ -89,18 +89,18 @@ export default async function HomePage() {
         <div className="max-w-3xl mx-auto">
           <Step
             number={1}
-            title="Connect your Gmail"
-            description="Sign in with Google OAuth. We only request read access to your emails."
+            title="Sign in with Google"
+            description="Connect your Gmail account securely. We only request read access to your emails."
           />
           <Step
             number={2}
-            title="Add your LLM API key"
-            description="Bring your own Gemini API key. Your key is encrypted and never shared."
+            title="Add your API key"
+            description="Paste your Gemini API key in Settings. Your key is encrypted and stored securely."
           />
           <Step
             number={3}
-            title="Let AI organize"
-            description="Watch as your emails are categorized, summarized, and made searchable."
+            title="Start using AI features"
+            description="Your emails are automatically categorized, summarized, and made searchable."
           />
         </div>
       </section>
@@ -109,11 +109,11 @@ export default async function HomePage() {
       <section className="container mx-auto px-4 py-24 text-center">
         <h2 className="text-3xl font-bold mb-4">Ready to take control?</h2>
         <p className="text-lg text-muted-foreground mb-8">
-          Self-host or deploy to Vercel in minutes.
+          Sign in with Google and add your API key to get started.
         </p>
         <Link href="/auth/signin">
           <Button size="lg" className="text-lg px-8">
-            Start Free
+            Get Started Free
           </Button>
         </Link>
       </section>
@@ -121,7 +121,7 @@ export default async function HomePage() {
       {/* Footer */}
       <footer className="border-t py-8">
         <div className="container mx-auto px-4 text-center text-sm text-muted-foreground">
-          <p>Hivemail - Open source email CRM</p>
+          <p>Hivemail - AI-powered email CRM</p>
         </div>
       </footer>
     </div>

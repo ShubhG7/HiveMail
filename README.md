@@ -1,17 +1,17 @@
 # Hivemail - Personal Email CRM + Agent
 
-A plug-and-play AI-powered email management system. Self-host or deploy to Vercel + GCP Cloud Run.
+A hosted AI-powered email management system. Users sign in with Google and add their own Gemini API key.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
 ## Features
 
-- 🔐 **Google OAuth** - Secure sign-in with Gmail access
+- 🔐 **Google OAuth** - Users sign in with their Google account
 - 🤖 **AI Categorization** - Auto-sorts emails into categories (Hiring, Bills, Receipts, etc.)
 - 📝 **Smart Summaries** - Get the gist of long threads instantly
-- 💬 **AI Chat** - Search and query your emails naturally
+- 💬 **AI Chat** - Search and query emails naturally
 - ✉️ **AI Reply Drafts** - Generate intelligent reply suggestions
-- 🔒 **BYOK** - Bring your own LLM API key (Gemini)
+- 🔒 **BYOK** - Users bring their own LLM API key (Gemini) - stored encrypted
 - 🛡️ **Privacy First** - Encrypted storage, redaction options
 - 📊 **Dashboard** - Email analytics and insights
 
@@ -20,24 +20,35 @@ A plug-and-play AI-powered email management system. Self-host or deploy to Verce
 - **Web App**: Next.js 15 (App Router), Auth.js v5, shadcn/ui, Prisma
 - **Worker**: Python 3.11, FastAPI, LangGraph, LangChain
 - **Database**: PostgreSQL + pgvector
-- **LLM**: Gemini 2.5 Flash (default), configurable
+- **LLM**: Gemini 2.5 Flash (default), configurable per user
 
 ---
 
-## Quick Start (Local Development)
+## For Users
+
+Simply:
+1. **Sign in** with your Google account
+2. **Add your Gemini API key** in Settings (get it from [Google AI Studio](https://aistudio.google.com/app/apikey))
+3. **Start using** AI-powered email management!
+
+Your API key is encrypted and stored securely. You can update or remove it anytime in Settings.
+
+---
+
+## Developer Setup (Local Development)
 
 ### Prerequisites
 
 - Node.js 18+
 - Python 3.11+
-- Docker & Docker Compose
-- Google Cloud Console access
+- Docker & Docker Compose (for local database)
+- Google Cloud Console access (for OAuth setup)
 
 ### 1. Clone and Install
 
 ```bash
-git clone <repo-url>
-cd hivemail
+git clone https://github.com/ShubhG7/HiveMail.git
+cd Hivemail
 
 # Install Node.js dependencies
 npm install
@@ -85,8 +96,11 @@ openssl rand -base64 32
 ### 4. Start Services
 
 ```bash
-# Start PostgreSQL and Redis
-docker-compose up -d postgres redis
+# Start PostgreSQL and Redis (if using Docker)
+docker compose up -d postgres redis
+
+# Or use your own PostgreSQL instance
+# Update DATABASE_URL in .env.local
 
 # Run database migrations
 npm run db:push
@@ -105,7 +119,7 @@ Open [http://localhost:3000](http://localhost:3000)
 
 ---
 
-## Deployment
+## Production Deployment
 
 ### Vercel Deployment (Next.js App)
 
@@ -304,7 +318,7 @@ Add `WORKER_BASE_URL` to Vercel environment variables with the Cloud Run URL.
 | `GCP_LOCATION` | GCP region | Optional |
 | `GCP_QUEUE_NAME` | Cloud Tasks queue name | Optional |
 
-### LLM Configuration
+### User Configuration
 
 Users configure their own LLM API key in Settings. Supported providers:
 
@@ -318,7 +332,7 @@ Get API key: [Google AI Studio](https://aistudio.google.com/app/apikey)
 
 ## Security Considerations
 
-- LLM API keys are stored encrypted server-side
+- LLM API keys are stored encrypted server-side (per user)
 - Email bodies are encrypted at rest
 - OAuth tokens are encrypted
 - Redaction modes available for sensitive content
@@ -395,7 +409,7 @@ npm run db:studio
 
 ### LLM Errors
 
-- Verify API key is valid
+- Verify user's API key is valid
 - Check quota limits
 - Review redaction settings
 
