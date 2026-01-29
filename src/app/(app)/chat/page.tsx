@@ -8,6 +8,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { ApiKeyDialog } from "@/components/api-key-dialog";
+import { useApiKey } from "@/hooks/use-api-key";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
@@ -18,6 +20,7 @@ import {
   ExternalLink,
   MessageSquare,
   Sparkles,
+  Key,
 } from "lucide-react";
 
 interface ChatMessage {
@@ -39,6 +42,7 @@ interface ChatMessage {
 
 export default function ChatPage() {
   const { toast } = useToast();
+  const { hasApiKey, loading: apiKeyLoading, showDialog, setShowDialog, checkApiKey } = useApiKey();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -54,6 +58,12 @@ export default function ChatPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || loading) return;
+
+    // Check for API key before sending
+    if (!hasApiKey) {
+      setShowDialog(true);
+      return;
+    }
 
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
@@ -92,11 +102,17 @@ export default function ChatPage() {
         setMessages((prev) => [...prev, assistantMessage]);
       } else {
         const error = await response.json();
-        toast({
-          title: "Error",
-          description: error.error || "Failed to get response",
-          variant: "destructive",
-        });
+        
+        // Check if it's an API key error
+        if (error.error?.includes("API key")) {
+          setShowDialog(true);
+        } else {
+          toast({
+            title: "Error",
+            description: error.error || "Failed to get response",
+            variant: "destructive",
+          });
+        }
       }
     } catch (error) {
       toast({
@@ -110,23 +126,48 @@ export default function ChatPage() {
   };
 
   const handleSuggestion = (suggestion: string) => {
+    if (!hasApiKey) {
+      setShowDialog(true);
+      return;
+    }
     setInput(suggestion);
+  };
+
+  const handleApiKeySuccess = () => {
+    checkApiKey();
   };
 
   return (
     <div className="flex flex-col h-full">
+      {/* API Key Dialog */}
+      <ApiKeyDialog
+        open={showDialog}
+        onOpenChange={setShowDialog}
+        onSuccess={handleApiKeySuccess}
+        title="API Key Required"
+        description="To use the AI chat feature, please add your Gemini API key. Your key is encrypted and stored securely."
+      />
+
       {/* Header */}
       <div className="p-4 border-b">
-        <div className="flex items-center gap-2">
-          <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Sparkles className="w-5 h-5 text-primary" />
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+              <Sparkles className="w-5 h-5 text-primary" />
+            </div>
+            <div>
+              <h1 className="font-semibold">AI Email Assistant</h1>
+              <p className="text-sm text-muted-foreground">
+                Ask questions about your emails
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="font-semibold">AI Email Assistant</h1>
-            <p className="text-sm text-muted-foreground">
-              Ask questions about your emails
-            </p>
-          </div>
+          {!apiKeyLoading && !hasApiKey && (
+            <Button variant="outline" size="sm" onClick={() => setShowDialog(true)}>
+              <Key className="w-4 h-4 mr-2" />
+              Add API Key
+            </Button>
+          )}
         </div>
       </div>
 
@@ -134,7 +175,7 @@ export default function ChatPage() {
       <ScrollArea className="flex-1" ref={scrollRef}>
         <div className="p-4 space-y-4">
           {messages.length === 0 ? (
-            <WelcomeState onSuggestion={handleSuggestion} />
+            <WelcomeState onSuggestion={handleSuggestion} hasApiKey={hasApiKey} onAddKey={() => setShowDialog(true)} />
           ) : (
             messages.map((message) => (
               <MessageBubble key={message.id} message={message} />
@@ -155,7 +196,7 @@ export default function ChatPage() {
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about your emails..."
+            placeholder={hasApiKey ? "Ask about your emails..." : "Add API key to start chatting..."}
             disabled={loading}
             className="flex-1"
           />
@@ -168,7 +209,15 @@ export default function ChatPage() {
   );
 }
 
-function WelcomeState({ onSuggestion }: { onSuggestion: (s: string) => void }) {
+function WelcomeState({ 
+  onSuggestion, 
+  hasApiKey,
+  onAddKey 
+}: { 
+  onSuggestion: (s: string) => void;
+  hasApiKey: boolean;
+  onAddKey: () => void;
+}) {
   const suggestions = [
     "What emails need my reply?",
     "Show me emails from last week",
@@ -189,18 +238,34 @@ function WelcomeState({ onSuggestion }: { onSuggestion: (s: string) => void }) {
           find important information.
         </p>
       </div>
-      <div className="flex flex-wrap justify-center gap-2 max-w-lg">
-        {suggestions.map((suggestion) => (
-          <Button
-            key={suggestion}
-            variant="outline"
-            size="sm"
-            onClick={() => onSuggestion(suggestion)}
-          >
-            {suggestion}
+
+      {!hasApiKey ? (
+        <div className="text-center space-y-4">
+          <div className="p-4 rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800">
+            <p className="text-sm text-amber-800 dark:text-amber-200">
+              <Key className="w-4 h-4 inline mr-2" />
+              Add your Gemini API key to start using AI features
+            </p>
+          </div>
+          <Button onClick={onAddKey}>
+            <Key className="w-4 h-4 mr-2" />
+            Add API Key
           </Button>
-        ))}
-      </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap justify-center gap-2 max-w-lg">
+          {suggestions.map((suggestion) => (
+            <Button
+              key={suggestion}
+              variant="outline"
+              size="sm"
+              onClick={() => onSuggestion(suggestion)}
+            >
+              {suggestion}
+            </Button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

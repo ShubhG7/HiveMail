@@ -54,8 +54,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Hybrid search: SQL + Vector
-    let relevantThreads: any[] = [];
-    let relevantMessages: any[] = [];
+    const relevantThreads: any[] = [];
+    const relevantMessages: any[] = [];
 
     // Text search
     if (searchText) {

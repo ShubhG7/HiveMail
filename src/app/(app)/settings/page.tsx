@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -14,8 +15,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Key, Shield, RefreshCw, Check } from "lucide-react";
+import { Loader2, Key, Shield, RefreshCw, Check, ExternalLink, Sparkles, Trash2 } from "lucide-react";
 
 interface Settings {
   llmProvider: string;
@@ -30,15 +42,15 @@ interface Settings {
 }
 
 const LLM_PROVIDERS = [
-  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash (Recommended)" },
-  { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro (Higher Quality)" },
-  { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash (Budget)" },
+  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash", description: "Best price/performance (Recommended)" },
+  { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro", description: "Higher quality responses" },
+  { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash", description: "Budget option" },
 ];
 
 const REDACTION_MODES = [
-  { value: "OFF", label: "Off - No redaction" },
-  { value: "REDACT_BEFORE_LLM", label: "Redact before LLM" },
-  { value: "SUMMARIES_ONLY", label: "Summaries only (no bodies)" },
+  { value: "OFF", label: "Off", description: "No redaction applied" },
+  { value: "REDACT_BEFORE_LLM", label: "Redact before LLM", description: "Sensitive data redacted before AI processing" },
+  { value: "SUMMARIES_ONLY", label: "Summaries only", description: "Only send metadata, never email bodies" },
 ];
 
 export default function SettingsPage() {
@@ -47,6 +59,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [apiKey, setApiKey] = useState("");
+  const [showApiKeyInput, setShowApiKeyInput] = useState(false);
   const [syncStatus, setSyncStatus] = useState<any>(null);
 
   useEffect(() => {
@@ -106,6 +119,7 @@ export default function SettingsPage() {
     if (!apiKey.trim()) return;
     await saveSettings({ llmApiKey: apiKey });
     setApiKey("");
+    setShowApiKeyInput(false);
   };
 
   const handleRemoveApiKey = async () => {
@@ -174,80 +188,144 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="p-6 max-w-3xl mx-auto space-y-6">
+    <div className="p-6 max-w-3xl mx-auto space-y-6 pb-20">
       <div>
         <h1 className="text-2xl font-bold">Settings</h1>
         <p className="text-muted-foreground">Manage your account and preferences</p>
       </div>
 
-      {/* LLM Settings */}
-      <Card>
+      {/* API Key Section - Prominent */}
+      <Card className={!settings.hasApiKey ? "border-amber-300 dark:border-amber-700" : ""}>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Key className="w-5 h-5" />
-            LLM Configuration
-          </CardTitle>
-          <CardDescription>
-            Configure your AI model and API key
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                <Key className="w-5 h-5 text-primary" />
+              </div>
+              <div>
+                <CardTitle>LLM API Key</CardTitle>
+                <CardDescription>
+                  Required for AI features (categorization, summaries, chat)
+                </CardDescription>
+              </div>
+            </div>
+            {settings.hasApiKey && (
+              <Badge variant="secondary" className="bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
+                <Check className="w-3 h-3 mr-1" />
+                Configured
+              </Badge>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label>LLM Provider</Label>
-            <Select
-              value={settings.llmProvider}
-              onValueChange={(value) => saveSettings({ llmProvider: value })}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {LLM_PROVIDERS.map((provider) => (
-                  <SelectItem key={provider.value} value={provider.value}>
-                    {provider.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {!settings.hasApiKey && !showApiKeyInput && (
+            <div className="p-4 rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800">
+              <p className="text-sm text-amber-800 dark:text-amber-200 mb-3">
+                <Sparkles className="w-4 h-4 inline mr-2" />
+                Add your Gemini API key to enable AI-powered email categorization, summaries, and chat.
+              </p>
+              <Button onClick={() => setShowApiKeyInput(true)}>
+                <Key className="w-4 h-4 mr-2" />
+                Add API Key
+              </Button>
+            </div>
+          )}
 
-          <div className="space-y-2">
-            <Label>API Key</Label>
-            {settings.hasApiKey ? (
-              <div className="flex items-center gap-2">
-                <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-muted rounded-md">
-                  <Check className="w-4 h-4 text-green-500" />
-                  <span className="text-sm">API key configured</span>
-                </div>
-                <Button variant="outline" size="sm" onClick={handleRemoveApiKey}>
-                  Remove
-                </Button>
+          {(showApiKeyInput || settings.hasApiKey) && (
+            <>
+              <div className="space-y-2">
+                <Label>LLM Provider</Label>
+                <Select
+                  value={settings.llmProvider}
+                  onValueChange={(value) => saveSettings({ llmProvider: value })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LLM_PROVIDERS.map((provider) => (
+                      <SelectItem key={provider.value} value={provider.value}>
+                        <div className="flex flex-col">
+                          <span>{provider.label}</span>
+                          <span className="text-xs text-muted-foreground">{provider.description}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-            ) : (
-              <div className="flex gap-2">
-                <Input
-                  type="password"
-                  placeholder="Enter your Gemini API key"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                />
-                <Button onClick={handleApiKeySubmit} disabled={!apiKey.trim() || saving}>
-                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save"}
-                </Button>
+
+              <div className="space-y-2">
+                <Label>API Key</Label>
+                {settings.hasApiKey && !showApiKeyInput ? (
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-muted rounded-md border">
+                      <Check className="w-4 h-4 text-green-500" />
+                      <span className="text-sm">API key configured securely</span>
+                      <span className="text-xs text-muted-foreground">(encrypted)</span>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => setShowApiKeyInput(true)}>
+                      Update
+                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="outline" size="sm" className="text-destructive">
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Remove API Key?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will disable all AI features until you add a new key.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={handleRemoveApiKey} className="bg-destructive text-destructive-foreground">
+                            Remove
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <Input
+                        type="password"
+                        placeholder="Enter your Gemini API key (AIza...)"
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleApiKeySubmit();
+                        }}
+                      />
+                      <Button onClick={handleApiKeySubmit} disabled={!apiKey.trim() || saving}>
+                        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save"}
+                      </Button>
+                      {showApiKeyInput && settings.hasApiKey && (
+                        <Button variant="outline" onClick={() => { setShowApiKeyInput(false); setApiKey(""); }}>
+                          Cancel
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-            <p className="text-xs text-muted-foreground">
-              Get your API key from{" "}
+
               <a
                 href="https://aistudio.google.com/app/apikey"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-primary underline"
+                className="flex items-center gap-2 text-sm text-primary hover:underline"
               >
-                Google AI Studio
+                <Sparkles className="w-4 h-4" />
+                Get your free API key from Google AI Studio
+                <ExternalLink className="w-3 h-3" />
               </a>
-            </p>
-          </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -275,13 +353,16 @@ export default function SettingsPage() {
               <SelectContent>
                 {REDACTION_MODES.map((mode) => (
                   <SelectItem key={mode.value} value={mode.value}>
-                    {mode.label}
+                    <div className="flex flex-col">
+                      <span>{mode.label}</span>
+                      <span className="text-xs text-muted-foreground">{mode.description}</span>
+                    </div>
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              Choose how sensitive data is handled before processing
+              Controls how sensitive data (SSN, credit cards, etc.) is handled before AI processing
             </p>
           </div>
 
@@ -291,7 +372,7 @@ export default function SettingsPage() {
             <div>
               <Label>AI Reply Drafts</Label>
               <p className="text-sm text-muted-foreground">
-                Allow AI to draft email replies
+                Allow AI to generate reply drafts (you always review before sending)
               </p>
             </div>
             <Switch
@@ -318,9 +399,9 @@ export default function SettingsPage() {
             <div className="p-4 bg-muted rounded-lg space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">Status</span>
-                <span className="text-sm">
+                <Badge variant={syncStatus.isRunning ? "default" : "secondary"}>
                   {syncStatus.isRunning ? "Syncing..." : "Idle"}
-                </span>
+                </Badge>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">Last Sync</span>
@@ -332,11 +413,11 @@ export default function SettingsPage() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">Threads</span>
-                <span className="text-sm">{syncStatus.stats?.threads || 0}</span>
+                <span className="text-sm">{syncStatus.stats?.threads?.toLocaleString() || 0}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">Messages</span>
-                <span className="text-sm">{syncStatus.stats?.messages || 0}</span>
+                <span className="text-sm">{syncStatus.stats?.messages?.toLocaleString() || 0}</span>
               </div>
             </div>
           )}
@@ -347,7 +428,7 @@ export default function SettingsPage() {
               onClick={() => triggerSync("incremental")}
               disabled={syncStatus?.isRunning}
             >
-              <RefreshCw className="w-4 h-4 mr-2" />
+              <RefreshCw className={`w-4 h-4 mr-2 ${syncStatus?.isRunning ? 'animate-spin' : ''}`} />
               Refresh Now
             </Button>
             <Button

@@ -170,9 +170,7 @@ declare module "next-auth" {
     };
     accessToken?: string;
   }
-}
 
-declare module "next-auth/jwt" {
   interface JWT {
     id?: string;
     accessToken?: string;

@@ -15,6 +15,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ApiKeyDialog } from "@/components/api-key-dialog";
+import { useApiKey } from "@/hooks/use-api-key";
 import { cn, formatFullDate, getInitials } from "@/lib/utils";
 import { getCategoryById } from "@/lib/categories";
 import { useToast } from "@/hooks/use-toast";
@@ -25,9 +27,9 @@ import {
   Loader2,
   X,
   Sparkles,
-  AlertTriangle,
   ChevronDown,
   ChevronUp,
+  Key,
 } from "lucide-react";
 
 interface Message {
@@ -73,6 +75,7 @@ interface ThreadDetailProps {
 
 export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps) {
   const { toast } = useToast();
+  const { hasApiKey, showDialog, setShowDialog, checkApiKey } = useApiKey();
   const [thread, setThread] = useState<ThreadDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
@@ -131,6 +134,12 @@ export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps)
   };
 
   const generateDraft = async () => {
+    // Check for API key
+    if (!hasApiKey) {
+      setShowDialog(true);
+      return;
+    }
+
     setDraftLoading(true);
     try {
       const response = await fetch(`/api/threads/${threadId}/reply`, {
@@ -151,11 +160,17 @@ export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps)
         }
       } else {
         const error = await response.json();
-        toast({
-          title: "Error",
-          description: error.error || "Failed to generate draft",
-          variant: "destructive",
-        });
+        
+        // Check if it's an API key error
+        if (error.error?.includes("API key") || error.error?.includes("LLM")) {
+          setShowDialog(true);
+        } else {
+          toast({
+            title: "Error",
+            description: error.error || "Failed to generate draft",
+            variant: "destructive",
+          });
+        }
       }
     } catch (error) {
       toast({
@@ -241,6 +256,10 @@ export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps)
     });
   };
 
+  const handleApiKeySuccess = () => {
+    checkApiKey();
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -261,6 +280,15 @@ export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps)
 
   return (
     <div className="flex flex-col h-full">
+      {/* API Key Dialog */}
+      <ApiKeyDialog
+        open={showDialog}
+        onOpenChange={setShowDialog}
+        onSuccess={handleApiKeySuccess}
+        title="API Key Required"
+        description="To generate AI reply drafts, please add your Gemini API key."
+      />
+
       {/* Header */}
       <div className="p-4 border-b space-y-2">
         <div className="flex items-start justify-between">
@@ -354,10 +382,12 @@ export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps)
             >
               {draftLoading ? (
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : !hasApiKey ? (
+                <Key className="w-4 h-4 mr-2" />
               ) : (
                 <Sparkles className="w-4 h-4 mr-2" />
               )}
-              Generate Draft
+              {!hasApiKey ? "Add API Key" : "Generate Draft"}
             </Button>
             <Button onClick={sendReply} disabled={sendLoading || !replyContent.trim()}>
               {sendLoading ? (

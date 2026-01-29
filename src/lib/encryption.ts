@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "crypto";
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash } from "crypto";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 16;
@@ -92,6 +92,5 @@ export function decryptIfPresent(value: string | null | undefined): string | nul
  * Hashes content for deduplication (not for security)
  */
 export function hashContent(content: string): string {
-  const { createHash } = require("crypto");
   return createHash("sha256").update(content).digest("hex");
 }
