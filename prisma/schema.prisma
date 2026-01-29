@@ -91,6 +91,8 @@ model UserSettings {
   userId          String   @unique
   llmProvider     String   @default("gemini-2.5-flash")
   llmApiKeyEnc    String?  @db.Text
+  llmBaseUrl      String?  // For custom providers
+  llmModel        String?  // For custom providers
   redactionMode   RedactionMode @default(OFF)
   includeLabels   String[] @default([])
   excludeLabels   String[] @default(["SPAM", "TRASH"])

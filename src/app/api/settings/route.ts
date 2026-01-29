@@ -59,6 +59,12 @@ export async function POST(request: NextRequest) {
     if (body.llmApiKey !== undefined) {
       updateData.llmApiKeyEnc = body.llmApiKey ? encrypt(body.llmApiKey) : null;
     }
+    if (body.baseUrl !== undefined) {
+      updateData.llmBaseUrl = body.baseUrl || null;
+    }
+    if (body.model !== undefined) {
+      updateData.llmModel = body.model || null;
+    }
     if (body.redactionMode) {
       updateData.redactionMode = body.redactionMode;
     }

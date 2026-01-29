@@ -45,6 +45,13 @@ const LLM_PROVIDERS = [
   { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash", description: "Best price/performance (Recommended)" },
   { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro", description: "Higher quality responses" },
   { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash", description: "Budget option" },
+  { value: "openai-gpt-4", label: "OpenAI GPT-4", description: "Most capable model" },
+  { value: "openai-gpt-4-turbo", label: "OpenAI GPT-4 Turbo", description: "Faster GPT-4 variant" },
+  { value: "openai-gpt-3.5-turbo", label: "OpenAI GPT-3.5 Turbo", description: "Fast and affordable" },
+  { value: "anthropic-claude-3-5-sonnet", label: "Claude 3.5 Sonnet", description: "Best overall performance" },
+  { value: "anthropic-claude-3-opus", label: "Claude 3 Opus", description: "Most capable Claude model" },
+  { value: "anthropic-claude-3-haiku", label: "Claude 3 Haiku", description: "Fast and cost-effective" },
+  { value: "custom", label: "Custom (OpenAI-compatible)", description: "Use your own API endpoint" },
 ];
 
 const REDACTION_MODES = [

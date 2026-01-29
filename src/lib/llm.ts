@@ -1,11 +1,23 @@
 import { prisma } from "./db";
 import { decrypt } from "./encryption";
 
-export type LLMProvider = "gemini-2.5-flash" | "gemini-2.5-pro" | "gemini-2.0-flash";
+export type LLMProvider = 
+  | "gemini-2.5-flash" 
+  | "gemini-2.5-pro" 
+  | "gemini-2.0-flash"
+  | "openai-gpt-4"
+  | "openai-gpt-4-turbo"
+  | "openai-gpt-3.5-turbo"
+  | "anthropic-claude-3-5-sonnet"
+  | "anthropic-claude-3-opus"
+  | "anthropic-claude-3-haiku"
+  | "custom";
 
 export interface LLMConfig {
   provider: LLMProvider;
   apiKey: string;
+  baseUrl?: string; // For custom providers
+  model?: string; // For custom providers
 }
 
 export interface ClassificationResult {
@@ -59,11 +71,19 @@ export interface ChatResponse {
 }
 
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+const OPENAI_API_BASE = "https://api.openai.com/v1";
+const ANTHROPIC_API_BASE = "https://api.anthropic.com/v1";
 
-const MODEL_MAP: Record<LLMProvider, string> = {
+const MODEL_MAP: Partial<Record<LLMProvider, string>> = {
   "gemini-2.5-flash": "models/gemini-2.5-flash-preview-05-20",
   "gemini-2.5-pro": "models/gemini-2.5-pro-preview-05-06",
   "gemini-2.0-flash": "models/gemini-2.0-flash",
+  "openai-gpt-4": "gpt-4",
+  "openai-gpt-4-turbo": "gpt-4-turbo-preview",
+  "openai-gpt-3.5-turbo": "gpt-3.5-turbo",
+  "anthropic-claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
+  "anthropic-claude-3-opus": "claude-3-opus-20240229",
+  "anthropic-claude-3-haiku": "claude-3-haiku-20240307",
 };
 
 /**
@@ -83,14 +103,45 @@ export async function getLLMConfig(userId: string): Promise<LLMConfig | null> {
     return null;
   }
 
-  return {
+  const config: LLMConfig = {
     provider: settings.llmProvider as LLMProvider,
     apiKey,
   };
+
+  // For custom providers, include baseUrl and model
+  if (settings.llmProvider === "custom") {
+    config.baseUrl = (settings as any).llmBaseUrl || undefined;
+    config.model = (settings as any).llmModel || undefined;
+  }
+
+  return config;
 }
 
 /**
- * Call Gemini API with structured output
+ * Unified LLM caller that supports multiple providers
+ */
+async function callLLM<T>(
+  config: LLMConfig,
+  systemPrompt: string,
+  userPrompt: string,
+  responseSchema?: object
+): Promise<T> {
+  // Route to appropriate provider
+  if (config.provider.startsWith("gemini-")) {
+    return callGemini(config, systemPrompt, userPrompt, responseSchema);
+  } else if (config.provider.startsWith("openai-")) {
+    return callOpenAI(config, systemPrompt, userPrompt, responseSchema);
+  } else if (config.provider.startsWith("anthropic-")) {
+    return callAnthropic(config, systemPrompt, userPrompt, responseSchema);
+  } else if (config.provider === "custom") {
+    return callCustom(config, systemPrompt, userPrompt, responseSchema);
+  } else {
+    throw new Error(`Unsupported LLM provider: ${config.provider}`);
+  }
+}
+
+/**
+ * Call Gemini API
  */
 async function callGemini<T>(
   config: LLMConfig,
@@ -145,11 +196,181 @@ async function callGemini<T>(
     throw new Error("No response from Gemini API");
   }
 
-  // Parse JSON response
   try {
     return JSON.parse(text) as T;
   } catch {
-    // If not JSON, return as-is (for non-structured responses)
+    return text as T;
+  }
+}
+
+/**
+ * Call OpenAI API
+ */
+async function callOpenAI<T>(
+  config: LLMConfig,
+  systemPrompt: string,
+  userPrompt: string,
+  responseSchema?: object
+): Promise<T> {
+  const model = MODEL_MAP[config.provider] || "gpt-3.5-turbo";
+  const url = `${OPENAI_API_BASE}/chat/completions`;
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+
+  const requestBody: any = {
+    model,
+    messages,
+    temperature: 0.2,
+    max_tokens: 4096,
+  };
+
+  if (responseSchema) {
+    requestBody.response_format = { type: "json_object" };
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`OpenAI API error: ${JSON.stringify(error)}`);
+  }
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content;
+
+  if (!text) {
+    throw new Error("No response from OpenAI API");
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return text as T;
+  }
+}
+
+/**
+ * Call Anthropic API
+ */
+async function callAnthropic<T>(
+  config: LLMConfig,
+  systemPrompt: string,
+  userPrompt: string,
+  responseSchema?: object
+): Promise<T> {
+  const model = MODEL_MAP[config.provider] || "claude-3-haiku-20240307";
+  const url = `${ANTHROPIC_API_BASE}/messages`;
+
+  const requestBody: any = {
+    model,
+    max_tokens: 4096,
+    system: systemPrompt,
+    messages: [
+      {
+        role: "user",
+        content: userPrompt,
+      },
+    ],
+  };
+
+  if (responseSchema) {
+    // Anthropic doesn't support structured output directly, but we can request JSON
+    requestBody.system = `${systemPrompt}\n\nRespond with valid JSON only.`;
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": config.apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`Anthropic API error: ${JSON.stringify(error)}`);
+  }
+
+  const data = await response.json();
+  const text = data.content?.[0]?.text;
+
+  if (!text) {
+    throw new Error("No response from Anthropic API");
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return text as T;
+  }
+}
+
+/**
+ * Call custom LLM API (OpenAI-compatible)
+ */
+async function callCustom<T>(
+  config: LLMConfig,
+  systemPrompt: string,
+  userPrompt: string,
+  responseSchema?: object
+): Promise<T> {
+  if (!config.baseUrl || !config.model) {
+    throw new Error("Custom provider requires baseUrl and model");
+  }
+
+  const url = `${config.baseUrl}/chat/completions`;
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+
+  const requestBody: any = {
+    model: config.model,
+    messages,
+    temperature: 0.2,
+    max_tokens: 4096,
+  };
+
+  if (responseSchema) {
+    requestBody.response_format = { type: "json_object" };
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`Custom LLM API error: ${JSON.stringify(error)}`);
+  }
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content;
+
+  if (!text) {
+    throw new Error("No response from custom LLM API");
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
     return text as T;
   }
 }
@@ -211,7 +432,7 @@ Body preview: ${content.bodyPreview?.slice(0, 500) || ""}`;
     required: ["category", "priority", "needsReply", "spamScore", "sensitiveFlags", "confidence"],
   };
 
-  return callGemini<ClassificationResult>(config, systemPrompt, userPrompt, schema);
+  return callLLM<ClassificationResult>(config, systemPrompt, userPrompt, schema);
 }
 
 /**
@@ -257,7 +478,7 @@ ${thread.previousSummary ? `\nPrevious summary: ${thread.previousSummary}` : ""}
     required: ["shortSummary", "fullSummary"],
   };
 
-  return callGemini<SummaryResult>(config, systemPrompt, userPrompt, schema);
+  return callLLM<SummaryResult>(config, systemPrompt, userPrompt, schema);
 }
 
 /**
@@ -325,7 +546,7 @@ Body: ${content.body?.slice(0, 2000) || ""}`;
     required: ["tasks", "deadlines", "entities", "keyFacts"],
   };
 
-  return callGemini<ExtractionResult>(config, systemPrompt, userPrompt, schema);
+  return callLLM<ExtractionResult>(config, systemPrompt, userPrompt, schema);
 }
 
 /**
@@ -364,7 +585,7 @@ ${context.userInstructions ? `User instructions: ${context.userInstructions}` : 
 
 Write only the reply body, no subject line.`;
 
-  return callGemini<string>(config, systemPrompt, userPrompt);
+  return callLLM<string>(config, systemPrompt, userPrompt);
 }
 
 /**
@@ -463,7 +684,7 @@ User question: ${query}`;
     required: ["answer", "citations", "suggestedActions"],
   };
 
-  return callGemini<ChatResponse>(config, systemPrompt, userPrompt, schema);
+  return callLLM<ChatResponse>(config, systemPrompt, userPrompt, schema);
 }
 
 /**
