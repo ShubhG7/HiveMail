@@ -1,0 +1,320 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String?
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+  oauthTokens   OAuthToken[]
+  settings      UserSettings?
+  threads       Thread[]
+  messages      Message[]
+  tasks         Task[]
+  customBins    CustomBin[]
+  chatSessions  ChatSession[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model OAuthToken {
+  id              String   @id @default(cuid())
+  userId          String
+  provider        String   @default("google")
+  accessTokenEnc  String   @db.Text
+  refreshTokenEnc String   @db.Text
+  expiry          DateTime?
+  scope           String?
+  historyId       String?  // Gmail history ID for incremental sync
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([userId])
+}
+
+model UserSettings {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  llmProvider     String   @default("gemini-2.5-flash")
+  llmApiKeyEnc    String?  @db.Text
+  redactionMode   RedactionMode @default(OFF)
+  includeLabels   String[] @default([])
+  excludeLabels   String[] @default(["SPAM", "TRASH"])
+  backfillDays    Int      @default(30)
+  timezone        String   @default("UTC")
+  aiReplyEnabled  Boolean  @default(false)
+  onboardingComplete Boolean @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum RedactionMode {
+  OFF
+  REDACT_BEFORE_LLM
+  SUMMARIES_ONLY
+}
+
+model Thread {
+  id              String   @id @default(cuid())
+  userId          String
+  gmailThreadId   String
+  subject         String?
+  participants    String[] @default([])
+  lastMessageAt   DateTime?
+  category        String   @default("misc")
+  priority        Priority @default(NORMAL)
+  summary         String?  @db.Text
+  summaryShort    String?
+  embedding       Unsupported("vector(768)")?
+  needsReply      Boolean  @default(false)
+  isRead          Boolean  @default(true)
+  isStarred       Boolean  @default(false)
+  labels          String[] @default([])
+  messageCount    Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  processedAt     DateTime?
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+  tasks    Task[]
+
+  @@unique([userId, gmailThreadId])
+  @@index([userId])
+  @@index([userId, category])
+  @@index([userId, lastMessageAt])
+  @@index([userId, needsReply])
+}
+
+enum Priority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+model Message {
+  id              String   @id @default(cuid())
+  userId          String
+  gmailMessageId  String
+  gmailThreadId   String
+  threadId        String?
+  fromAddress     String
+  fromName        String?
+  toAddresses     String[] @default([])
+  ccAddresses     String[] @default([])
+  bccAddresses    String[] @default([])
+  date            DateTime
+  subject         String?
+  snippet         String?
+  bodyTextEnc     String?  @db.Text
+  bodyHtmlEnc     String?  @db.Text
+  bodyHash        String?
+  labels          String[] @default([])
+  category        String   @default("misc")
+  spamScore       Float    @default(0)
+  sensitiveFlags  String[] @default([])
+  extracted       Json?    // Tasks, deadlines, entities, links
+  isRead          Boolean  @default(false)
+  isStarred       Boolean  @default(false)
+  hasAttachments  Boolean  @default(false)
+  attachments     Json?    // Attachment metadata
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  processedAt     DateTime?
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  thread Thread? @relation(fields: [threadId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, gmailMessageId])
+  @@index([userId])
+  @@index([userId, gmailThreadId])
+  @@index([userId, date])
+  @@index([userId, category])
+  @@index([userId, fromAddress])
+}
+
+model Task {
+  id              String     @id @default(cuid())
+  userId          String
+  threadId        String?
+  sourceMessageId String?
+  title           String
+  description     String?
+  dueAt           DateTime?
+  status          TaskStatus @default(PENDING)
+  priority        Priority   @default(NORMAL)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  thread Thread? @relation(fields: [threadId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([userId, status])
+  @@index([userId, dueAt])
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model CustomBin {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  description String?
+  color       String?
+  icon        String?
+  ruleHints   Json?    // Keywords, senders, etc.
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model ChatSession {
+  id        String        @id @default(cuid())
+  userId    String
+  title     String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([userId])
+}
+
+model ChatMessage {
+  id            String      @id @default(cuid())
+  sessionId     String
+  role          ChatRole
+  content       String      @db.Text
+  citations     Json?       // Thread/message IDs referenced
+  suggestedActions Json?    // Suggested follow-up actions
+  createdAt     DateTime    @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+}
+
+enum ChatRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+model SyncJob {
+  id          String      @id @default(cuid())
+  userId      String
+  jobType     SyncJobType
+  status      JobStatus   @default(PENDING)
+  progress    Int         @default(0)
+  totalItems  Int?
+  error       String?     @db.Text
+  metadata    Json?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+enum SyncJobType {
+  BACKFILL
+  INCREMENTAL
+  PROCESS_THREAD
+  PROCESS_MESSAGE
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model ProcessingLog {
+  id            String   @id @default(cuid())
+  userId        String
+  jobId         String?
+  correlationId String?
+  level         String   @default("info")
+  message       String
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@index([jobId])
+  @@index([correlationId])
+  @@index([createdAt])
+}
