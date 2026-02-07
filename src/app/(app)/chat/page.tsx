@@ -12,6 +12,8 @@ import { ApiKeyDialog } from "@/components/api-key-dialog";
 import { useApiKey } from "@/hooks/use-api-key";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Send,
   Loader2,
@@ -21,6 +23,8 @@ import {
   MessageSquare,
   Sparkles,
   Key,
+  Copy,
+  Check,
 } from "lucide-react";
 
 interface ChatMessage {
@@ -48,6 +52,52 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+
+  // Load conversation history on mount if sessionId exists
+  useEffect(() => {
+    const loadHistory = async () => {
+      if (!hasApiKey) {
+        setLoadingHistory(false);
+        return;
+      }
+
+      // Try to get the most recent session
+      try {
+        const response = await fetch("/api/chat");
+        if (response.ok) {
+          const data = await response.json();
+          if (data.sessions && data.sessions.length > 0) {
+            const latestSession = data.sessions[0];
+            setSessionId(latestSession.id);
+            
+            // Load messages for the latest session
+            const sessionResponse = await fetch(`/api/chat?sessionId=${latestSession.id}`);
+            if (sessionResponse.ok) {
+              const sessionData = await sessionResponse.json();
+              if (sessionData.messages) {
+                const loadedMessages: ChatMessage[] = sessionData.messages.map((m: any) => ({
+                  id: m.id,
+                  role: m.role.toLowerCase() as "user" | "assistant",
+                  content: m.content,
+                  citations: m.citations || [],
+                  suggestedActions: m.suggestedActions || [],
+                  timestamp: new Date(m.createdAt),
+                }));
+                setMessages(loadedMessages);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Failed to load chat history:", error);
+      } finally {
+        setLoadingHistory(false);
+      }
+    };
+
+    loadHistory();
+  }, [hasApiKey]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -133,8 +183,11 @@ export default function ChatPage() {
     setInput(suggestion);
   };
 
-  const handleApiKeySuccess = () => {
-    checkApiKey();
+  const handleApiKeySuccess = async () => {
+    const updated = await checkApiKey();
+    if (updated) {
+      setShowDialog(false);
+    }
   };
 
   return (
@@ -174,7 +227,11 @@ export default function ChatPage() {
       {/* Messages */}
       <ScrollArea className="flex-1" ref={scrollRef}>
         <div className="p-4 space-y-4">
-          {messages.length === 0 ? (
+          {loadingHistory ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : messages.length === 0 ? (
             <WelcomeState onSuggestion={handleSuggestion} hasApiKey={hasApiKey} onAddKey={() => setShowDialog(true)} />
           ) : (
             messages.map((message) => (
@@ -272,6 +329,13 @@ function WelcomeState({
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(message.content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
     <div className={cn("flex gap-3", isUser && "flex-row-reverse")}>
@@ -281,11 +345,35 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         </AvatarFallback>
       </Avatar>
       <div className={cn("flex-1 space-y-2", isUser && "flex flex-col items-end")}>
-        <Card className={cn("inline-block max-w-[80%]", isUser && "bg-primary text-primary-foreground")}>
-          <CardContent className="p-3">
-            <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-          </CardContent>
-        </Card>
+        <div className="relative group">
+          <Card className={cn("inline-block max-w-[80%]", isUser && "bg-primary text-primary-foreground")}>
+            <CardContent className="p-3">
+              {isUser ? (
+                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+              ) : (
+                <div className="text-sm prose prose-sm max-w-none dark:prose-invert prose-headings:my-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {message.content}
+                  </ReactMarkdown>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+          {!isUser && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6"
+              onClick={handleCopy}
+            >
+              {copied ? (
+                <Check className="w-3 h-3" />
+              ) : (
+                <Copy className="w-3 h-3" />
+              )}
+            </Button>
+          )}
+        </div>
 
         {/* Citations */}
         {message.citations && message.citations.length > 0 && (

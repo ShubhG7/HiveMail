@@ -35,33 +35,48 @@ def _derive_key(master_key: bytes, salt: bytes) -> bytes:
 
 
 def encrypt(plaintext: str) -> str:
-    """Encrypt a string using AES-256-GCM."""
+    """Encrypt a string using AES-256-GCM.
+    Matches Node.js format: base64(salt + iv + auth_tag + ciphertext)
+    """
     master_key = _get_master_key()
     salt = os.urandom(SALT_LENGTH)
     key = _derive_key(master_key, salt)
     iv = os.urandom(IV_LENGTH)
     
     aesgcm = AESGCM(key)
-    ciphertext = aesgcm.encrypt(iv, plaintext.encode('utf-8'), None)
+    # Python returns ciphertext + auth_tag
+    encrypted = aesgcm.encrypt(iv, plaintext.encode('utf-8'), None)
     
-    # Combine: salt + iv + ciphertext (includes auth tag)
-    combined = salt + iv + ciphertext
+    # Extract ciphertext and auth_tag
+    # The tag is always the last 16 bytes
+    ciphertext = encrypted[:-AUTH_TAG_LENGTH]
+    auth_tag = encrypted[-AUTH_TAG_LENGTH:]
+    
+    # Combine: salt + iv + auth_tag + ciphertext
+    combined = salt + iv + auth_tag + ciphertext
     return base64.b64encode(combined).decode('utf-8')
 
 
 def decrypt(encrypted_data: str) -> str:
-    """Decrypt an encrypted string."""
+    """Decrypt an encrypted string.
+    Expects Node.js format: base64(salt + iv + auth_tag + ciphertext)
+    """
     master_key = _get_master_key()
     combined = base64.b64decode(encrypted_data)
     
     # Extract components
     salt = combined[:SALT_LENGTH]
     iv = combined[SALT_LENGTH:SALT_LENGTH + IV_LENGTH]
-    ciphertext = combined[SALT_LENGTH + IV_LENGTH:]
+    auth_tag = combined[SALT_LENGTH + IV_LENGTH:SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH]
+    ciphertext = combined[SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH:]
     
     key = _derive_key(master_key, salt)
     aesgcm = AESGCM(key)
-    plaintext = aesgcm.decrypt(iv, ciphertext, None)
+    
+    # Python expects ciphertext + auth_tag
+    data_to_decrypt = ciphertext + auth_tag
+    
+    plaintext = aesgcm.decrypt(iv, data_to_decrypt, None)
     
     return plaintext.decode('utf-8')
 

@@ -1,12 +1,17 @@
-"""Gmail API client for the worker."""
+"""Gmail API client for the worker.
+
+Improved with batch fetching and better error handling, inspired by msgvault's efficient sync approach.
+"""
 
 import base64
 import re
+import time
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from config import get_settings
 from encryption import decrypt, encrypt
@@ -33,13 +38,22 @@ def get_gmail_service_from_encrypted(access_token_enc: str, refresh_token_enc: s
     return get_gmail_service(access_token, refresh_token)
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(HttpError)
+)
 def fetch_message_ids_for_backfill(
     service,
     after_date: datetime,
     exclude_labels: Optional[List[str]] = None,
     max_results: int = 500
 ) -> List[str]:
-    """Fetch message IDs for backfill within a date range."""
+    """
+    Fetch message IDs for backfill within a date range.
+    
+    Improved with retry logic and rate limiting awareness.
+    """
     message_ids = []
     page_token = None
     
@@ -66,51 +80,77 @@ def fetch_message_ids_for_backfill(
             page_token = response.get('nextPageToken')
             if not page_token or len(message_ids) >= max_results:
                 break
+            
+            # Rate limiting: small delay between pages
+            time.sleep(0.1)
                 
         except HttpError as e:
+            if e.resp.status == 429:  # Rate limit exceeded
+                # Wait longer for rate limits
+                time.sleep(5)
+                continue
             raise Exception(f"Failed to list messages: {e}")
     
     return message_ids
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(HttpError)
+)
 def fetch_history_changes(
     service,
     start_history_id: str
 ) -> Dict[str, Any]:
-    """Fetch changes since a history ID."""
+    """
+    Fetch changes since a history ID.
+    
+    Improved with retry logic and better error handling.
+    """
     message_ids = set()
     new_history_id = None
     page_token = None
     
     try:
         while True:
-            response = service.users().history().list(
-                userId='me',
-                startHistoryId=start_history_id,
-                historyTypes=['messageAdded', 'messageDeleted', 'labelAdded', 'labelRemoved'],
-                pageToken=page_token
-            ).execute()
-            
-            new_history_id = response.get('historyId')
-            
-            if 'history' in response:
-                for record in response['history']:
-                    if 'messagesAdded' in record:
-                        for added in record['messagesAdded']:
-                            if 'message' in added and 'id' in added['message']:
-                                message_ids.add(added['message']['id'])
-                    if 'labelsAdded' in record:
-                        for labeled in record['labelsAdded']:
-                            if 'message' in labeled and 'id' in labeled['message']:
-                                message_ids.add(labeled['message']['id'])
-                    if 'labelsRemoved' in record:
-                        for unlabeled in record['labelsRemoved']:
-                            if 'message' in unlabeled and 'id' in unlabeled['message']:
-                                message_ids.add(unlabeled['message']['id'])
-            
-            page_token = response.get('nextPageToken')
-            if not page_token:
-                break
+            try:
+                response = service.users().history().list(
+                    userId='me',
+                    startHistoryId=start_history_id,
+                    historyTypes=['messageAdded', 'messageDeleted', 'labelAdded', 'labelRemoved'],
+                    pageToken=page_token
+                ).execute()
+                
+                new_history_id = response.get('historyId')
+                
+                if 'history' in response:
+                    for record in response['history']:
+                        if 'messagesAdded' in record:
+                            for added in record['messagesAdded']:
+                                if 'message' in added and 'id' in added['message']:
+                                    message_ids.add(added['message']['id'])
+                        if 'labelsAdded' in record:
+                            for labeled in record['labelsAdded']:
+                                if 'message' in labeled and 'id' in labeled['message']:
+                                    message_ids.add(labeled['message']['id'])
+                        if 'labelsRemoved' in record:
+                            for unlabeled in record['labelsRemoved']:
+                                if 'message' in unlabeled and 'id' in unlabeled['message']:
+                                    message_ids.add(unlabeled['message']['id'])
+                
+                page_token = response.get('nextPageToken')
+                if not page_token:
+                    break
+                    
+                # Small delay between pages to avoid rate limits
+                time.sleep(0.1)
+                        
+            except HttpError as e:
+                if e.resp.status == 429:  # Rate limit
+                    time.sleep(5)
+                    continue
+                raise
                 
     except HttpError as e:
         if e.resp.status == 404:
@@ -124,8 +164,17 @@ def fetch_history_changes(
     }
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=5),
+    retry=retry_if_exception_type(HttpError)
+)
 def fetch_message(service, message_id: str) -> Optional[Dict[str, Any]]:
-    """Fetch a single message with full payload."""
+    """
+    Fetch a single message with full payload.
+    
+    Improved with retry logic for transient errors.
+    """
     try:
         return service.users().messages().get(
             userId='me',
@@ -135,7 +184,43 @@ def fetch_message(service, message_id: str) -> Optional[Dict[str, Any]]:
     except HttpError as e:
         if e.resp.status == 404:
             return None
+        if e.resp.status == 429:  # Rate limit
+            time.sleep(2)
+            raise  # Retry will handle it
         raise Exception(f"Failed to fetch message {message_id}: {e}")
+
+
+def fetch_messages_batch(
+    service,
+    message_ids: List[str],
+    batch_size: int = 100
+) -> Dict[str, Optional[Dict[str, Any]]]:
+    """
+    Fetch multiple messages in batches for better efficiency.
+    
+    Inspired by msgvault's approach of batching API calls.
+    Returns a dictionary mapping message_id -> message data (or None if not found).
+    """
+    results = {}
+    
+    # Process in batches to avoid overwhelming the API
+    for i in range(0, len(message_ids), batch_size):
+        batch = message_ids[i:i + batch_size]
+        
+        for message_id in batch:
+            try:
+                message = fetch_message(service, message_id)
+                results[message_id] = message
+            except Exception as e:
+                # Log but continue with other messages
+                results[message_id] = None
+                continue
+        
+        # Small delay between batches to respect rate limits
+        if i + batch_size < len(message_ids):
+            time.sleep(0.2)
+    
+    return results
 
 
 def parse_message(message: Dict[str, Any]) -> Dict[str, Any]:

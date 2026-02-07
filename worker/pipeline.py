@@ -3,6 +3,7 @@
 from typing import TypedDict, List, Dict, Any, Optional, Annotated
 from datetime import datetime
 from langgraph.graph import StateGraph, END
+from sqlalchemy import text
 import structlog
 
 from db import (
@@ -15,10 +16,11 @@ from gmail_client import (
     fetch_history_changes, fetch_message, parse_message, get_gmail_profile
 )
 from llm_service import (
-    get_llm, classify_email, summarize_thread, extract_from_email,
+    get_llm, classify_email, classify_with_rules, summarize_thread, extract_from_email,
     generate_embedding, detect_sensitive_patterns, redact_sensitive_content
 )
 from encryption import encrypt, hash_content
+from error_handling import LLMError, should_retry, get_user_friendly_message, log_error_for_support
 
 logger = structlog.get_logger()
 
@@ -32,6 +34,8 @@ class EmailProcessingState(TypedDict):
     # Settings
     llm_api_key_enc: Optional[str]
     llm_provider: str
+    llm_base_url: Optional[str]
+    llm_model: Optional[str]
     redaction_mode: str
     
     # Gmail service
@@ -61,6 +65,8 @@ class ThreadProcessingState(TypedDict):
     # Settings
     llm_api_key_enc: Optional[str]
     llm_provider: str
+    llm_base_url: Optional[str]
+    llm_model: Optional[str]
     
     # Thread data
     gmail_thread_id: str
@@ -86,6 +92,15 @@ def fetch_message_node(state: EmailProcessingState) -> EmailProcessingState:
         return {**state, "raw_message": raw_message}
     except Exception as e:
         logger.error("fetch_message_failed", message_id=state["message_id"], error=str(e))
+        try:
+            with get_db() as db:
+                log_processing(
+                    db, state["user_id"], state.get("job_id"), state.get("correlation_id"),
+                    "error", f"Fetch message failed: {str(e)}",
+                    {"message_id": state["message_id"]}
+                )
+        except:
+            pass
         return {**state, "error": str(e), "processed": False}
 
 
@@ -99,6 +114,15 @@ def parse_message_node(state: EmailProcessingState) -> EmailProcessingState:
         return {**state, "parsed_message": parsed}
     except Exception as e:
         logger.error("parse_message_failed", message_id=state["message_id"], error=str(e))
+        try:
+            with get_db() as db:
+                log_processing(
+                    db, state["user_id"], state.get("job_id"), state.get("correlation_id"),
+                    "error", f"Parse message failed: {str(e)}",
+                    {"message_id": state["message_id"]}
+                )
+        except:
+            pass
         return {**state, "error": str(e), "processed": False}
 
 
@@ -115,13 +139,46 @@ def detect_sensitive_node(state: EmailProcessingState) -> EmailProcessingState:
 
 
 def classify_message_node(state: EmailProcessingState) -> EmailProcessingState:
-    """Classify the message using LLM."""
-    if not state.get("parsed_message") or not state.get("llm_api_key_enc"):
+    """Classify the message using rules first, then LLM fallback."""
+    if not state.get("parsed_message"):
         return state
     
     parsed = state["parsed_message"]
     
-    # Apply redaction if needed
+    # Try rule-based classification first (cost-effective)
+    rule_result = classify_with_rules(
+        subject=parsed.get("subject", ""),
+        from_address=parsed.get("from_address", ""),
+        snippet=parsed.get("snippet", ""),
+        body_preview=parsed.get("body_text", "")[:500],  # Use first 500 chars for rules
+        labels=parsed.get("labels", []),
+    )
+    
+    # If rules matched with high confidence, use that result
+    if rule_result and rule_result.confidence >= 0.8:
+        logger.info(
+            "classification_by_rules",
+            message_id=state["message_id"],
+            category=rule_result.category,
+            confidence=rule_result.confidence,
+        )
+        return {**state, "classification": rule_result.model_dump(), "classified_by": "rules"}
+    
+    # Rules didn't match or low confidence - use LLM
+    if not state.get("llm_api_key_enc"):
+        # No LLM key, use rule result if available or fallback
+        if rule_result:
+            return {**state, "classification": rule_result.model_dump(), "classified_by": "rules"}
+        return {**state, "classification": {
+            "category": "misc",
+            "priority": "NORMAL",
+            "needs_reply": False,
+            "spam_score": 0,
+            "sensitive_flags": state.get("sensitive_flags", []),
+            "confidence": 0,
+        }}
+    
+    # Apply redaction if needed for LLM
     body_preview = parsed.get("body_text", "")
     if state["redaction_mode"] == "REDACT_BEFORE_LLM" and body_preview:
         body_preview = redact_sensitive_content(body_preview)
@@ -129,7 +186,12 @@ def classify_message_node(state: EmailProcessingState) -> EmailProcessingState:
         body_preview = ""  # Don't send body to LLM
     
     try:
-        llm = get_llm(state["llm_api_key_enc"], state["llm_provider"])
+        llm = get_llm(
+            state["llm_api_key_enc"], 
+            state["llm_provider"],
+            state.get("llm_base_url"),
+            state.get("llm_model")
+        )
         result = classify_email(
             llm,
             subject=parsed.get("subject", ""),
@@ -138,9 +200,47 @@ def classify_message_node(state: EmailProcessingState) -> EmailProcessingState:
             body_preview=body_preview,
             labels=parsed.get("labels", []),
         )
-        return {**state, "classification": result.model_dump()}
+        logger.info(
+            "classification_by_llm",
+            message_id=state["message_id"],
+            category=result.category,
+            confidence=result.confidence,
+        )
+        return {**state, "classification": result.model_dump(), "classified_by": "llm"}
+    except LLMError as e:
+        # Log error with context for support
+        logger.error(
+            "llm_classification_error",
+            **log_error_for_support(e, {
+                "user_id": state["user_id"],
+                "message_id": state["message_id"],
+                "job_id": state.get("job_id"),
+            })
+        )
+        # Use fallback classification - still process the email
+        return {**state, "classification": {
+            "category": "misc",
+            "priority": "NORMAL",
+            "needs_reply": False,
+            "spam_score": 0,
+            "sensitive_flags": state.get("sensitive_flags", []),
+            "confidence": 0,
+        }, "llm_error": {
+            "type": e.error_type.value,
+            "message": get_user_friendly_message(e),
+            "retryable": should_retry(e),
+        }}
     except Exception as e:
         logger.warning("classify_message_failed", message_id=state["message_id"], error=str(e))
+        try:
+            with get_db() as db:
+                log_processing(
+                    db, state["user_id"], state.get("job_id"), state.get("correlation_id"),
+                    "warning", f"Classification failed: {str(e)}",
+                    {"message_id": state["message_id"]}
+                )
+        except:
+            pass
         # Use fallback classification
         return {**state, "classification": {
             "category": "misc",
@@ -168,13 +268,33 @@ def extract_entities_node(state: EmailProcessingState) -> EmailProcessingState:
         body = redact_sensitive_content(body)
     
     try:
-        llm = get_llm(state["llm_api_key_enc"], state["llm_provider"])
+        llm = get_llm(
+            state["llm_api_key_enc"], 
+            state["llm_provider"],
+            state.get("llm_base_url"),
+            state.get("llm_model")
+        )
         result = extract_from_email(
             llm,
             subject=parsed.get("subject", ""),
             body=body,
         )
         return {**state, "extraction": result.model_dump()}
+    except LLMError as e:
+        logger.error(
+            "llm_extraction_error",
+            **log_error_for_support(e, {
+                "user_id": state["user_id"],
+                "message_id": state["message_id"],
+                "job_id": state.get("job_id"),
+            })
+        )
+        # Return empty extraction - still process the email
+        return {**state, "extraction": {"tasks": [], "deadlines": [], "entities": {}, "key_facts": []}, "llm_error": {
+            "type": e.error_type.value,
+            "message": get_user_friendly_message(e),
+            "retryable": should_retry(e),
+        }}
     except Exception as e:
         logger.warning("extract_entities_failed", message_id=state["message_id"], error=str(e))
         return {**state, "extraction": {"tasks": [], "deadlines": [], "entities": {}, "key_facts": []}}
@@ -230,6 +350,15 @@ def persist_message_node(state: EmailProcessingState) -> EmailProcessingState:
         return {**state, "processed": True}
     except Exception as e:
         logger.error("persist_message_failed", message_id=state["message_id"], error=str(e))
+        try:
+            with get_db() as db:
+                log_processing(
+                    db, state["user_id"], state.get("job_id"), state.get("correlation_id"),
+                    "error", f"Persist message failed: {str(e)}",
+                    {"message_id": state["message_id"]}
+                )
+        except:
+            pass
         return {**state, "error": str(e), "processed": False}
 
 
@@ -241,7 +370,12 @@ def summarize_thread_node(state: ThreadProcessingState) -> ThreadProcessingState
         return state
     
     try:
-        llm = get_llm(state["llm_api_key_enc"], state["llm_provider"])
+        llm = get_llm(
+            state["llm_api_key_enc"], 
+            state["llm_provider"],
+            state.get("llm_base_url"),
+            state.get("llm_model")
+        )
         
         # Get the first message subject
         subject = state["messages"][0].get("subject", "") if state["messages"] else ""
@@ -258,6 +392,21 @@ def summarize_thread_node(state: ThreadProcessingState) -> ThreadProcessingState
         
         result = summarize_thread(llm, subject, messages_for_summary)
         return {**state, "summary": result.model_dump()}
+    except LLMError as e:
+        logger.error(
+            "llm_summarization_error",
+            **log_error_for_support(e, {
+                "user_id": state["user_id"],
+                "thread_id": state["gmail_thread_id"],
+                "job_id": state.get("job_id"),
+            })
+        )
+        # Return empty summary - still process the thread
+        return {**state, "summary": {"short_summary": "", "full_summary": ""}, "llm_error": {
+            "type": e.error_type.value,
+            "message": get_user_friendly_message(e),
+            "retryable": should_retry(e),
+        }}
     except Exception as e:
         logger.warning("summarize_thread_failed", thread_id=state["gmail_thread_id"], error=str(e))
         return {**state, "summary": {"short_summary": "", "full_summary": ""}}
@@ -276,8 +425,13 @@ def generate_embedding_node(state: ThreadProcessingState) -> ThreadProcessingSta
         text_for_embedding = f"{subject} {summary.get('full_summary', '')}"
         
         if text_for_embedding.strip():
-            embedding = generate_embedding(state["llm_api_key_enc"], text_for_embedding)
-            return {**state, "embedding": embedding}
+            embedding = generate_embedding(
+                state["llm_api_key_enc"], 
+                text_for_embedding,
+                state["llm_provider"]
+            )
+            if embedding:
+                return {**state, "embedding": embedding}
     except Exception as e:
         logger.warning("generate_embedding_failed", thread_id=state["gmail_thread_id"], error=str(e))
     
@@ -334,8 +488,8 @@ def persist_thread_node(state: ThreadProcessingState) -> ThreadProcessingState:
             if state.get("embedding"):
                 # Get the thread ID
                 result = db.execute(
-                    """SELECT id FROM "Thread" WHERE "userId" = %s AND "gmailThreadId" = %s""",
-                    (state["user_id"], state["gmail_thread_id"])
+                    text("""SELECT id FROM "Thread" WHERE "userId" = :user_id AND "gmailThreadId" = :gmail_thread_id"""),
+                    {"user_id": state["user_id"], "gmail_thread_id": state["gmail_thread_id"]}
                 ).fetchone()
                 if result:
                     update_thread_embedding(db, result[0], state["embedding"])

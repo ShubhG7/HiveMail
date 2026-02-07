@@ -6,31 +6,44 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { ApiKeyDialog } from "@/components/api-key-dialog";
-import { useApiKey } from "@/hooks/use-api-key";
 import { cn, formatFullDate, getInitials } from "@/lib/utils";
 import { getCategoryById } from "@/lib/categories";
 import { useToast } from "@/hooks/use-toast";
+import { useCompose } from "@/contexts/compose-context";
 import {
   Star,
   ExternalLink,
   Reply,
   Loader2,
   X,
-  Sparkles,
   ChevronDown,
   ChevronUp,
-  Key,
 } from "lucide-react";
+
+/**
+ * Sanitize email HTML to prevent style leakage
+ * Removes style tags, inline styles, and other problematic elements
+ */
+function sanitizeEmailHtml(html: string): string {
+  if (!html) return '';
+  
+  // Remove <style> tags and their content
+  let sanitized = html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+  
+  // Remove inline style attributes
+  sanitized = sanitized.replace(/\s*style\s*=\s*["'][^"']*["']/gi, '');
+  
+  // Remove script tags
+  sanitized = sanitized.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+  
+  // Remove on* event handlers
+  sanitized = sanitized.replace(/\s*on\w+\s*=\s*["'][^"']*["']/gi, '');
+  
+  // Remove meta tags that might affect rendering
+  sanitized = sanitized.replace(/<meta[^>]*>/gi, '');
+  
+  return sanitized;
+}
 
 interface Message {
   id: string;
@@ -75,41 +88,65 @@ interface ThreadDetailProps {
 
 export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps) {
   const { toast } = useToast();
-  const { hasApiKey, showDialog, setShowDialog, checkApiKey } = useApiKey();
+  const { openCompose } = useCompose();
   const [thread, setThread] = useState<ThreadDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
-  const [replyOpen, setReplyOpen] = useState(false);
-  const [replyContent, setReplyContent] = useState("");
-  const [draftLoading, setDraftLoading] = useState(false);
-  const [sendLoading, setSendLoading] = useState(false);
 
   useEffect(() => {
+    // Reset state immediately when threadId changes
+    setThread(null);
+    setLoading(true);
+    setExpandedMessages(new Set());
+    
+    let cancelled = false;
+    const abortController = new AbortController();
+    
     const fetchThread = async () => {
       setLoading(true);
+      setThread(null);
+      setExpandedMessages(new Set());
+      
       try {
-        const response = await fetch(`/api/threads/${threadId}`);
+        const response = await fetch(`/api/threads/${threadId}`, {
+          signal: abortController.signal,
+        });
+        
         if (response.ok) {
           const data = await response.json();
+          
+          if (cancelled) return;
+          
           setThread(data);
           // Expand the last message by default
           if (data.messages.length > 0) {
             setExpandedMessages(new Set([data.messages[data.messages.length - 1].id]));
           }
         }
-      } catch (error) {
+      } catch (error: any) {
+        if (error.name === 'AbortError') return;
+        
         console.error("Failed to fetch thread:", error);
-        toast({
-          title: "Error",
-          description: "Failed to load email thread",
-          variant: "destructive",
-        });
+        if (!cancelled) {
+          toast({
+            title: "Error",
+            description: "Failed to load email thread",
+            variant: "destructive",
+          });
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     };
 
     fetchThread();
+    
+    return () => {
+      cancelled = true;
+      abortController.abort();
+    };
   }, [threadId, toast]);
 
   const toggleStar = async () => {
@@ -133,115 +170,14 @@ export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps)
     }
   };
 
-  const generateDraft = async () => {
-    // Check for API key
-    if (!hasApiKey) {
-      setShowDialog(true);
-      return;
-    }
-
-    setDraftLoading(true);
-    try {
-      const response = await fetch(`/api/threads/${threadId}/reply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "draft" }),
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setReplyContent(data.draft);
-        if (data.warnings?.length) {
-          toast({
-            title: "Warning",
-            description: data.warnings[0],
-            variant: "destructive",
-          });
-        }
-      } else {
-        const error = await response.json();
-        
-        // Check if it's an API key error
-        if (error.error?.includes("API key") || error.error?.includes("LLM")) {
-          setShowDialog(true);
-        } else {
-          toast({
-            title: "Error",
-            description: error.error || "Failed to generate draft",
-            variant: "destructive",
-          });
-        }
-      }
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to generate draft",
-        variant: "destructive",
-      });
-    } finally {
-      setDraftLoading(false);
-    }
-  };
-
-  const sendReply = async () => {
-    if (!replyContent.trim()) return;
-    
-    setSendLoading(true);
-    try {
-      const response = await fetch(`/api/threads/${threadId}/reply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "send",
-          content: replyContent,
-        }),
-      });
-      
-      if (response.ok) {
-        toast({
-          title: "Reply sent",
-          description: "Your reply has been sent successfully.",
-        });
-        setReplyOpen(false);
-        setReplyContent("");
-      } else {
-        const data = await response.json();
-        if (data.requireConfirmation) {
-          // Handle sensitive content confirmation
-          if (confirm("This reply may contain sensitive information. Send anyway?")) {
-            await fetch(`/api/threads/${threadId}/reply`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                action: "send",
-                content: replyContent,
-                confirmSensitive: true,
-              }),
-            });
-            toast({
-              title: "Reply sent",
-              description: "Your reply has been sent successfully.",
-            });
-            setReplyOpen(false);
-            setReplyContent("");
-          }
-        } else {
-          toast({
-            title: "Error",
-            description: data.error || "Failed to send reply",
-            variant: "destructive",
-          });
-        }
-      }
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to send reply",
-        variant: "destructive",
-      });
-    } finally {
-      setSendLoading(false);
-    }
+  const handleReply = () => {
+    if (!thread) return;
+    const lastMessage = thread.messages[thread.messages.length - 1];
+    openCompose({
+      threadId: thread.id,
+      to: lastMessage?.fromAddress || "",
+      subject: thread.subject || "",
+    });
   };
 
   const toggleMessageExpand = (messageId: string) => {
@@ -254,10 +190,6 @@ export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps)
       }
       return newSet;
     });
-  };
-
-  const handleApiKeySuccess = () => {
-    checkApiKey();
   };
 
   if (loading) {
@@ -279,27 +211,18 @@ export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps)
   const category = getCategoryById(thread.category);
 
   return (
-    <div className="flex flex-col h-full">
-      {/* API Key Dialog */}
-      <ApiKeyDialog
-        open={showDialog}
-        onOpenChange={setShowDialog}
-        onSuccess={handleApiKeySuccess}
-        title="API Key Required"
-        description="To generate AI reply drafts, please add your Gemini API key."
-      />
-
+    <div className="flex flex-col h-full min-w-0 w-full">
       {/* Header */}
-      <div className="p-4 border-b space-y-2">
-        <div className="flex items-start justify-between">
-          <div className="flex-1 min-w-0">
+      <div className="p-4 border-b space-y-2 min-w-0">
+        <div className="flex items-start justify-between gap-2 min-w-0">
+          <div className="flex-1 min-w-0 overflow-hidden">
             <h1 className="text-xl font-semibold truncate">
               {thread.subject || "(No subject)"}
             </h1>
-            <div className="flex items-center gap-2 mt-1">
-              <Badge variant={thread.category as any}>{category.name}</Badge>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <Badge variant={thread.category as any} className="shrink-0">{category.name}</Badge>
               {thread.needsReply && (
-                <Badge variant="outline" className="text-amber-600 border-amber-600">
+                <Badge variant="outline" className="text-amber-600 border-amber-600 shrink-0">
                   Reply needed
                 </Badge>
               )}
@@ -327,15 +250,15 @@ export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps)
           </div>
         </div>
         {thread.summary && (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-muted-foreground break-words">
             <span className="font-medium">Summary:</span> {thread.summary}
           </p>
         )}
       </div>
 
       {/* Messages */}
-      <ScrollArea className="flex-1">
-        <div className="p-4 space-y-4">
+      <ScrollArea className="flex-1 w-full min-w-0">
+        <div className="p-4 space-y-4 min-w-0">
           {thread.messages.map((message, index) => (
             <MessageItem
               key={message.id}
@@ -350,55 +273,11 @@ export function ThreadDetail({ threadId, onUpdate, onClose }: ThreadDetailProps)
 
       {/* Reply Button */}
       <div className="p-4 border-t">
-        <Button onClick={() => setReplyOpen(true)} className="w-full">
+        <Button onClick={handleReply} className="w-full">
           <Reply className="w-4 h-4 mr-2" />
           Reply
         </Button>
       </div>
-
-      {/* Reply Dialog */}
-      <Dialog open={replyOpen} onOpenChange={setReplyOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Reply to thread</DialogTitle>
-            <DialogDescription>
-              Compose your reply or use AI to generate a draft.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <Textarea
-              value={replyContent}
-              onChange={(e) => setReplyContent(e.target.value)}
-              placeholder="Write your reply..."
-              rows={10}
-              className="resize-none"
-            />
-          </div>
-          <DialogFooter className="gap-2">
-            <Button
-              variant="outline"
-              onClick={generateDraft}
-              disabled={draftLoading}
-            >
-              {draftLoading ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : !hasApiKey ? (
-                <Key className="w-4 h-4 mr-2" />
-              ) : (
-                <Sparkles className="w-4 h-4 mr-2" />
-              )}
-              {!hasApiKey ? "Add API Key" : "Generate Draft"}
-            </Button>
-            <Button onClick={sendReply} disabled={sendLoading || !replyContent.trim()}>
-              {sendLoading ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                "Send Reply"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
@@ -417,32 +296,32 @@ function MessageItem({
   const sender = message.fromName || message.fromAddress;
 
   return (
-    <div className={cn("border rounded-lg", isLast && "border-primary/30")}>
+    <div className={cn("border rounded-lg overflow-hidden min-w-0", isLast && "border-primary/30")}>
       <button
         onClick={onToggle}
-        className="w-full p-4 text-left hover:bg-muted/50 transition-colors"
+        className="w-full p-4 text-left hover:bg-muted/50 transition-colors overflow-hidden min-w-0"
       >
-        <div className="flex items-center gap-3">
-          <Avatar>
+        <div className="flex items-center gap-3 min-w-0">
+          <Avatar className="shrink-0">
             <AvatarFallback>{getInitials(sender)}</AvatarFallback>
           </Avatar>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between">
-              <span className="font-medium truncate">{sender}</span>
-              <span className="text-sm text-muted-foreground shrink-0">
+          <div className="flex-1 min-w-0 overflow-hidden">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <span className="font-medium truncate min-w-0">{sender}</span>
+              <span className="text-sm text-muted-foreground shrink-0 whitespace-nowrap">
                 {formatFullDate(message.date)}
               </span>
             </div>
             {!isExpanded && (
-              <p className="text-sm text-muted-foreground truncate">
+              <p className="text-sm text-muted-foreground truncate min-w-0">
                 {message.snippet}
               </p>
             )}
           </div>
           {isExpanded ? (
-            <ChevronUp className="w-5 h-5 text-muted-foreground shrink-0" />
+            <ChevronUp className="w-5 h-5 text-muted-foreground shrink-0 flex-shrink-0" />
           ) : (
-            <ChevronDown className="w-5 h-5 text-muted-foreground shrink-0" />
+            <ChevronDown className="w-5 h-5 text-muted-foreground shrink-0 flex-shrink-0" />
           )}
         </div>
       </button>
@@ -450,25 +329,42 @@ function MessageItem({
       {isExpanded && (
         <>
           <Separator />
-          <div className="p-4">
-            <div className="text-sm text-muted-foreground mb-4 space-y-1">
-              <p>
-                <span className="font-medium">From:</span> {message.fromAddress}
+          <div className="p-4 overflow-hidden min-w-0">
+            <div className="text-sm text-muted-foreground mb-4 space-y-1 break-words">
+              <p className="break-words">
+                <span className="font-medium">From:</span> <span className="break-all">{message.fromAddress}</span>
               </p>
-              <p>
+              <p className="break-words">
                 <span className="font-medium">To:</span>{" "}
-                {message.toAddresses.join(", ")}
+                <span className="break-all">{message.toAddresses.join(", ")}</span>
               </p>
               {message.ccAddresses.length > 0 && (
-                <p>
+                <p className="break-words">
                   <span className="font-medium">Cc:</span>{" "}
-                  {message.ccAddresses.join(", ")}
+                  <span className="break-all">{message.ccAddresses.join(", ")}</span>
                 </p>
               )}
             </div>
-            <div className="email-body whitespace-pre-wrap">
-              {message.bodyText || message.snippet || "No content"}
-            </div>
+            {message.bodyHtml ? (
+              <div className="email-body-wrapper" style={{ isolation: 'isolate', contain: 'layout style paint' }}>
+                <div
+                  className="email-body prose prose-sm max-w-none dark:prose-invert overflow-x-auto break-words min-w-0 [&_*]:max-w-full [&_*]:box-border [&_img]:max-w-full [&_table]:max-w-full [&_table]:w-full [&_table]:table-auto [&_pre]:overflow-x-auto [&_pre]:break-words [&_td]:max-w-0 [&_th]:max-w-0"
+                  style={{ 
+                    contain: 'layout style paint', 
+                    maxWidth: '100%', 
+                    overflowX: 'auto',
+                    isolation: 'isolate',
+                    position: 'relative',
+                    zIndex: 0
+                  }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(message.bodyHtml) }}
+                />
+              </div>
+            ) : (
+              <div className="email-body whitespace-pre-wrap break-words overflow-hidden min-w-0" style={{ maxWidth: '100%' }}>
+                {message.bodyText || message.snippet || "No content"}
+              </div>
+            )}
           </div>
         </>
       )}

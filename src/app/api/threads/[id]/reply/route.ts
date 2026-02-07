@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
-import { getGmailClient, sendReply } from "@/lib/gmail";
+import { getGmailClient, sendReply, Attachment } from "@/lib/gmail";
 import { getLLMConfig, generateReplyDraft, detectSensitivePatterns } from "@/lib/llm";
 
 export async function POST(
@@ -110,12 +110,26 @@ export async function POST(
       const gmail = await getGmailClient(session.user.id);
       const lastMessage = thread.messages[0];
 
+      // Convert attachments from base64 to Buffer
+      const attachments: Attachment[] | undefined = body.attachments
+        ? body.attachments.map((att: any) => ({
+            filename: att.filename,
+            content: Buffer.from(att.content, "base64"),
+            contentType: att.contentType,
+          }))
+        : undefined;
+
       const messageId = await sendReply(gmail, {
         threadId: thread.gmailThreadId,
         to: body.to || [lastMessage?.fromAddress],
         cc: body.cc,
+        bcc: body.bcc,
         subject: body.subject || `Re: ${thread.subject}`,
         body: body.content,
+        bodyHtml: body.contentHtml,
+        attachments,
+        inReplyTo: body.inReplyTo,
+        references: body.references,
       });
 
       return NextResponse.json({

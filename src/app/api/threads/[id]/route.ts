@@ -23,9 +23,6 @@ export async function GET(
         userId: session.user.id,
       },
       include: {
-        messages: {
-          orderBy: { date: "asc" },
-        },
         tasks: {
           orderBy: { createdAt: "desc" },
         },
@@ -36,16 +33,17 @@ export async function GET(
       return NextResponse.json({ error: "Thread not found" }, { status: 404 });
     }
 
-    // Mark as read
-    if (!thread.isRead) {
-      await prisma.thread.update({
-        where: { id: thread.id },
-        data: { isRead: true },
-      });
-    }
+    // Fetch messages by gmailThreadId (more reliable than FK relation)
+    const rawMessages = await prisma.message.findMany({
+      where: {
+        userId: session.user.id,
+        gmailThreadId: thread.gmailThreadId,
+      },
+      orderBy: { date: "asc" },
+    });
 
     // Decrypt message bodies
-    const messages = thread.messages.map((m) => ({
+    const messages = rawMessages.map((m) => ({
       id: m.id,
       gmailMessageId: m.gmailMessageId,
       fromAddress: m.fromAddress,
@@ -65,6 +63,19 @@ export async function GET(
       attachments: m.attachments,
       extracted: m.extracted,
     }));
+    
+    // Get effective category from messages if thread is misc
+    const effectiveCategory = thread.category === "misc" && messages.length > 0
+      ? messages.find((m) => m.category !== "misc")?.category || thread.category
+      : thread.category;
+
+    // Mark as read in background (don't wait for it)
+    if (!thread.isRead) {
+      prisma.thread.update({
+        where: { id: thread.id },
+        data: { isRead: true },
+      }).catch((err) => console.error("Failed to mark thread as read:", err));
+    }
 
     return NextResponse.json({
       id: thread.id,
@@ -72,7 +83,7 @@ export async function GET(
       subject: thread.subject,
       participants: thread.participants,
       lastMessageAt: thread.lastMessageAt,
-      category: thread.category,
+      category: effectiveCategory,
       priority: thread.priority,
       summary: thread.summary,
       summaryShort: thread.summaryShort,
@@ -80,7 +91,7 @@ export async function GET(
       isRead: true,
       isStarred: thread.isStarred,
       labels: thread.labels,
-      messageCount: thread.messageCount,
+      messageCount: messages.length || thread.messageCount,
       messages,
       tasks: thread.tasks,
       gmailLink: getGmailThreadLink(thread.gmailThreadId),

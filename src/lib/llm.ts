@@ -5,9 +5,11 @@ export type LLMProvider =
   | "gemini-2.5-flash" 
   | "gemini-2.5-pro" 
   | "gemini-2.0-flash"
+  | "openai-gpt-4o"
   | "openai-gpt-4"
   | "openai-gpt-4-turbo"
   | "openai-gpt-3.5-turbo"
+  | "openai-gpt-5.2"
   | "anthropic-claude-3-5-sonnet"
   | "anthropic-claude-3-opus"
   | "anthropic-claude-3-haiku"
@@ -75,12 +77,14 @@ const OPENAI_API_BASE = "https://api.openai.com/v1";
 const ANTHROPIC_API_BASE = "https://api.anthropic.com/v1";
 
 const MODEL_MAP: Partial<Record<LLMProvider, string>> = {
-  "gemini-2.5-flash": "models/gemini-2.5-flash-preview-05-20",
-  "gemini-2.5-pro": "models/gemini-2.5-pro-preview-05-06",
+  "gemini-2.5-flash": "models/gemini-2.0-flash",  // Using stable model
+  "gemini-2.5-pro": "models/gemini-1.5-pro",  // Using stable model
   "gemini-2.0-flash": "models/gemini-2.0-flash",
+  "openai-gpt-4o": "gpt-4o",
   "openai-gpt-4": "gpt-4",
   "openai-gpt-4-turbo": "gpt-4-turbo-preview",
   "openai-gpt-3.5-turbo": "gpt-3.5-turbo",
+  "openai-gpt-5.2": "gpt-4o",  // Fallback to gpt-4o
   "anthropic-claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
   "anthropic-claude-3-opus": "claude-3-opus-20240229",
   "anthropic-claude-3-haiku": "claude-3-haiku-20240307",
@@ -158,11 +162,18 @@ async function callGemini<T>(
         role: "user",
         parts: [
           {
-            text: `${systemPrompt}\n\n${userPrompt}`,
+            text: userPrompt,
           },
         ],
       },
     ],
+    systemInstruction: {
+      parts: [
+        {
+          text: systemPrompt,
+        },
+      ],
+    },
     generationConfig: {
       temperature: 0.2,
       topP: 0.8,
@@ -176,30 +187,56 @@ async function callGemini<T>(
     requestBody.generationConfig.responseSchema = responseSchema;
   }
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(requestBody),
-  });
+  console.log("[LLM] Calling Gemini API", { model });
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`Gemini API error: ${JSON.stringify(error)}`);
-  }
-
-  const data = await response.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-  if (!text) {
-    throw new Error("No response from Gemini API");
-  }
+  // Add timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
 
   try {
-    return JSON.parse(text) as T;
-  } catch {
-    return text as T;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error("[LLM] Gemini API error:", {
+        status: response.status,
+        error,
+      });
+      throw new Error(`Gemini API error (${response.status}): ${JSON.stringify(error)}`);
+    }
+
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!text) {
+      console.error("[LLM] No response from Gemini API:", data);
+      throw new Error("No response from Gemini API");
+    }
+
+    console.log("[LLM] Gemini API call successful", { responseLength: text.length });
+
+    try {
+      return JSON.parse(text) as T;
+    } catch (parseError) {
+      console.warn("[LLM] Failed to parse JSON response, returning as text");
+      return text as T;
+    }
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      console.error("[LLM] Gemini API call timed out after 30 seconds");
+      throw new Error("Gemini API request timed out after 30 seconds");
+    }
+    throw error;
   }
 }
 
@@ -215,47 +252,87 @@ async function callOpenAI<T>(
   const model = MODEL_MAP[config.provider] || "gpt-3.5-turbo";
   const url = `${OPENAI_API_BASE}/chat/completions`;
 
+  // If using structured JSON response, OpenAI requires the word "json" in the messages
+  const enhancedSystemPrompt = responseSchema 
+    ? `${systemPrompt}\n\nRespond in valid JSON format.`
+    : systemPrompt;
+
   const messages = [
-    { role: "system", content: systemPrompt },
+    { role: "system", content: enhancedSystemPrompt },
     { role: "user", content: userPrompt },
   ];
 
+  // Newer models (GPT-4o, GPT-5.2) use max_completion_tokens instead of max_tokens
+  const isNewModel = model.includes("gpt-4o") || model.includes("gpt-5") || model.includes("o1");
+  
   const requestBody: any = {
     model,
     messages,
     temperature: 0.2,
-    max_tokens: 4096,
   };
+
+  // Use the correct parameter based on model
+  if (isNewModel) {
+    requestBody.max_completion_tokens = 4096;
+  } else {
+    requestBody.max_tokens = 4096;
+  }
 
   if (responseSchema) {
     requestBody.response_format = { type: "json_object" };
   }
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
+  console.log("[LLM] Calling OpenAI API", { model });
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`OpenAI API error: ${JSON.stringify(error)}`);
-  }
-
-  const data = await response.json();
-  const text = data.choices?.[0]?.message?.content;
-
-  if (!text) {
-    throw new Error("No response from OpenAI API");
-  }
+  // Add timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
 
   try {
-    return JSON.parse(text) as T;
-  } catch {
-    return text as T;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error("[LLM] OpenAI API error:", {
+        status: response.status,
+        error,
+      });
+      throw new Error(`OpenAI API error (${response.status}): ${JSON.stringify(error)}`);
+    }
+
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content;
+
+    if (!text) {
+      console.error("[LLM] No response from OpenAI API:", data);
+      throw new Error("No response from OpenAI API");
+    }
+
+    console.log("[LLM] OpenAI API call successful", { responseLength: text.length });
+
+    try {
+      return JSON.parse(text) as T;
+    } catch (parseError) {
+      console.warn("[LLM] Failed to parse JSON response, returning as text");
+      return text as T;
+    }
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      console.error("[LLM] OpenAI API call timed out after 30 seconds");
+      throw new Error("OpenAI API request timed out after 30 seconds");
+    }
+    throw error;
   }
 }
 
@@ -288,32 +365,58 @@ async function callAnthropic<T>(
     requestBody.system = `${systemPrompt}\n\nRespond with valid JSON only.`;
   }
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": config.apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify(requestBody),
-  });
+  console.log("[LLM] Calling Anthropic API", { model });
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`Anthropic API error: ${JSON.stringify(error)}`);
-  }
-
-  const data = await response.json();
-  const text = data.content?.[0]?.text;
-
-  if (!text) {
-    throw new Error("No response from Anthropic API");
-  }
+  // Add timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
 
   try {
-    return JSON.parse(text) as T;
-  } catch {
-    return text as T;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": config.apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error("[LLM] Anthropic API error:", {
+        status: response.status,
+        error,
+      });
+      throw new Error(`Anthropic API error (${response.status}): ${JSON.stringify(error)}`);
+    }
+
+    const data = await response.json();
+    const text = data.content?.[0]?.text;
+
+    if (!text) {
+      console.error("[LLM] No response from Anthropic API:", data);
+      throw new Error("No response from Anthropic API");
+    }
+
+    console.log("[LLM] Anthropic API call successful", { responseLength: text.length });
+
+    try {
+      return JSON.parse(text) as T;
+    } catch (parseError) {
+      console.warn("[LLM] Failed to parse JSON response, returning as text");
+      return text as T;
+    }
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      console.error("[LLM] Anthropic API call timed out after 30 seconds");
+      throw new Error("Anthropic API request timed out after 30 seconds");
+    }
+    throw error;
   }
 }
 
@@ -331,8 +434,14 @@ async function callCustom<T>(
   }
 
   const url = `${config.baseUrl}/chat/completions`;
+  
+  // If using structured JSON response, OpenAI-compatible APIs require the word "json" in the messages
+  const enhancedSystemPrompt = responseSchema 
+    ? `${systemPrompt}\n\nRespond in valid JSON format.`
+    : systemPrompt;
+
   const messages = [
-    { role: "system", content: systemPrompt },
+    { role: "system", content: enhancedSystemPrompt },
     { role: "user", content: userPrompt },
   ];
 
@@ -613,21 +722,65 @@ export async function chatWithContext(
       role: "user" | "assistant";
       content: string;
     }>;
+    emailStats?: {
+      totalThreads: number;
+      totalMessages: number;
+      threadsThisWeek: number;
+      threadsThisMonth: number;
+      unreadThreads: number;
+      needsReplyCount: number;
+      categoryBreakdown: Array<{ category: string; count: number }>;
+      rejectionCount: number;
+      offerCount: number;
+      topSenders: Array<{ email: string; count: number }>;
+    };
   }
 ): Promise<ChatResponse> {
+  const hasStats = !!context.emailStats;
+  
   const systemPrompt = `You are an email assistant with access to the user's email data. Answer questions about their emails.
 
 Guidelines:
-- Only answer based on the provided email context
+- Answer based on the provided email context and statistics
+- When asked about counts, numbers, or statistics, use the provided EMAIL STATISTICS section
 - If you don't have enough information, say so clearly
 - Always cite specific emails/threads when making claims
+- Provide specific numbers and data when available
+- Format numbers clearly (e.g., "You have 15 rejection emails" not "You have some rejections")
 - Suggest helpful follow-up actions when appropriate
 - Don't make up information that isn't in the context
 
-You have access to these commands:
-- open: <threadId> - Opens a specific thread
-- show emails from <sender> last week - Searches by sender and date
-- find the email with <search term> - Searches email content`;
+${hasStats ? `For stats questions, reference the EMAIL STATISTICS section for accurate counts.` : ""}
+
+You can suggest these actions:
+- open_thread: Opens a specific email thread
+- filter_search: Search/filter emails by criteria
+- draft_reply: Draft a reply to an email`;
+
+  // Build stats context if available
+  let statsContext = "";
+  if (context.emailStats) {
+    const stats = context.emailStats;
+    statsContext = `
+EMAIL STATISTICS:
+- Total email threads: ${stats.totalThreads}
+- Total messages: ${stats.totalMessages}
+- Threads this week: ${stats.threadsThisWeek}
+- Threads this month: ${stats.threadsThisMonth}
+- Unread threads: ${stats.unreadThreads}
+- Needs reply: ${stats.needsReplyCount}
+
+REJECTION EMAILS: ${stats.rejectionCount} rejection/declined emails found
+
+OFFER/POSITIVE EMAILS: ${stats.offerCount} offer/acceptance emails found
+
+CATEGORY BREAKDOWN:
+${stats.categoryBreakdown.map(c => `  - ${c.category}: ${c.count} threads`).join("\n")}
+
+TOP SENDERS:
+${stats.topSenders.slice(0, 5).map(s => `  - ${s.email}: ${s.count} emails`).join("\n")}
+`;
+  }
 
   const threadsContext = context.relevantThreads
     .map((t) => `Thread [${t.threadId}]: "${t.subject}" with ${t.participants.join(", ")} - ${t.summary}`)
@@ -641,7 +794,7 @@ You have access to these commands:
     ?.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
     .join("\n") || "";
 
-  const userPrompt = `${historyText ? `Chat history:\n${historyText}\n\n` : ""}
+  const userPrompt = `${historyText ? `Chat history:\n${historyText}\n\n` : ""}${statsContext}
 Relevant threads:
 ${threadsContext || "No relevant threads found."}
 
@@ -688,34 +841,64 @@ User question: ${query}`;
 }
 
 /**
- * Generate embedding for text using Gemini
+ * Generate embedding for text - supports multiple providers
  */
 export async function generateEmbedding(
   config: LLMConfig,
   text: string
 ): Promise<number[]> {
-  const url = `${GEMINI_API_BASE}/models/text-embedding-004:embedContent?key=${config.apiKey}`;
+  // Route to appropriate provider
+  if (config.provider.startsWith("gemini-")) {
+    const url = `${GEMINI_API_BASE}/models/text-embedding-004:embedContent?key=${config.apiKey}`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "models/text-embedding-004",
-      content: {
-        parts: [{ text: text.slice(0, 2048) }],
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
       },
-    }),
-  });
+      body: JSON.stringify({
+        model: "models/text-embedding-004",
+        content: {
+          parts: [{ text: text.slice(0, 2048) }],
+        },
+      }),
+    });
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`Gemini embedding error: ${JSON.stringify(error)}`);
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(`Gemini embedding error: ${JSON.stringify(error)}`);
+    }
+
+    const data = await response.json();
+    return data.embedding.values;
+  } else if (config.provider.startsWith("openai-")) {
+    const url = `${OPENAI_API_BASE}/embeddings`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: text.slice(0, 2048),
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(`OpenAI embedding error: ${JSON.stringify(error)}`);
+    }
+
+    const data = await response.json();
+    return data.data[0].embedding;
+  } else {
+    // Anthropic and custom providers don't have embedding APIs
+    // Return empty array to skip vector search
+    console.warn(`Embeddings not supported for provider: ${config.provider}. Skipping vector search.`);
+    return [];
   }
-
-  const data = await response.json();
-  return data.embedding.values;
 }
 
 /**

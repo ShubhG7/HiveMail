@@ -101,13 +101,107 @@
   }
 }
 
-/* Email body styles */
+/* Email body wrapper - strong isolation */
+.email-body-wrapper {
+  isolation: isolate;
+  contain: layout style paint;
+  position: relative;
+  z-index: 0;
+  max-width: 100%;
+  overflow: hidden;
+  /* Reset to prevent inheritance issues */
+  display: block;
+  color: hsl(var(--foreground));
+  background-color: transparent;
+}
+
+/* Email body styles - isolated to prevent affecting app UI */
 .email-body {
   @apply text-sm leading-relaxed;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  /* Strong containment to prevent bleeding */
+  contain: layout style paint;
+  isolation: isolate;
+  overflow-x: auto;
+  overflow-y: visible;
+  /* Reset color inheritance to prevent dark mode emails from affecting app */
+  color: hsl(var(--foreground)) !important;
+  background-color: transparent !important;
+  /* Ensure all content is contained */
+  box-sizing: border-box;
+  /* Prevent style leakage */
+  position: relative;
+  z-index: 0;
+}
+
+/* Reset ALL styles within email body to prevent leakage */
+.email-body *,
+.email-body *::before,
+.email-body *::after {
+  max-width: 100% !important;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  box-sizing: border-box !important;
+  /* Prevent email styles from overriding app styles */
+  color: inherit !important;
+  /* Reset font properties that might leak */
+  font-family: inherit !important;
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  line-height: inherit !important;
+  /* Reset positioning that might affect layout */
+  position: static !important;
+  /* Prevent z-index issues */
+  z-index: auto !important;
+}
+
+/* Reset specific elements that might have dark backgrounds in emails */
+.email-body div,
+.email-body p,
+.email-body span,
+.email-body td,
+.email-body th,
+.email-body table,
+.email-body tr,
+.email-body tbody,
+.email-body thead,
+.email-body tfoot {
+  background-color: transparent !important;
+  background-image: none !important;
+  color: inherit !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  /* Reset borders that might cause visual issues */
+  border-color: hsl(var(--border)) !important;
+}
+
+/* Ensure tables don't overflow */
+.email-body table {
+  width: 100% !important;
+  table-layout: auto !important;
+  display: table !important;
+  overflow-x: auto !important;
+}
+
+.email-body td,
+.email-body th {
+  word-wrap: break-word !important;
+  overflow-wrap: break-word !important;
+  max-width: 0 !important; /* Force table cells to respect container width */
+}
+
+/* Preserve link colors but ensure visibility */
+.email-body a {
+  @apply text-primary underline underline-offset-2;
+  word-break: break-all;
+  color: hsl(var(--primary)) !important;
 }
 
 .email-body a {
   @apply text-primary underline underline-offset-2;
+  word-break: break-all;
 }
 
 .email-body blockquote {
@@ -116,6 +210,8 @@
 
 .email-body pre {
   @apply bg-muted p-3 rounded-md overflow-x-auto text-xs font-mono;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .email-body ul, .email-body ol {
@@ -124,6 +220,17 @@
 
 .email-body li {
   @apply my-1;
+}
+
+.email-body img {
+  max-width: 100%;
+  height: auto;
+}
+
+.email-body table {
+  max-width: 100%;
+  overflow-x: auto;
+  display: block;
 }
 
 /* Animation utilities */
@@ -154,4 +261,70 @@
 /* Loading skeleton */
 .skeleton {
   @apply animate-pulse bg-muted rounded;
+}
+
+/* Markdown styles for chat */
+.prose {
+  @apply text-foreground;
+}
+
+.prose code {
+  @apply bg-muted px-1 py-0.5 rounded text-sm font-mono;
+}
+
+.prose pre {
+  @apply bg-muted p-3 rounded-md overflow-x-auto;
+}
+
+.prose pre code {
+  @apply bg-transparent p-0;
+}
+
+.prose a {
+  @apply text-primary underline;
+}
+
+.prose ul,
+.prose ol {
+  @apply my-2;
+}
+
+.prose li {
+  @apply my-1;
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+  @apply font-semibold mt-4 mb-2;
+}
+
+.prose h1 {
+  @apply text-xl;
+}
+
+.prose h2 {
+  @apply text-lg;
+}
+
+.prose h3 {
+  @apply text-base;
+}
+
+.prose blockquote {
+  @apply border-l-2 border-muted pl-4 italic text-muted-foreground;
+}
+
+.prose table {
+  @apply w-full border-collapse my-4;
+}
+
+.prose th,
+.prose td {
+  @apply border border-border px-3 py-2;
+}
+
+.prose th {
+  @apply bg-muted font-semibold;
 }

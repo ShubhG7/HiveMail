@@ -50,10 +50,36 @@ export function AppHeader({ user }: AppHeaderProps) {
       });
       
       if (response.ok) {
+        const data = await response.json();
         toast({
           title: "Sync started",
           description: "Your emails are being refreshed in the background.",
         });
+        
+        // Poll for sync completion and refresh the page
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusResponse = await fetch("/api/sync");
+            if (statusResponse.ok) {
+              const status = await statusResponse.json();
+              const job = status.jobs?.find((j: any) => j.id === data.jobId);
+              if (job && (job.status === "COMPLETED" || job.status === "FAILED")) {
+                clearInterval(pollInterval);
+                setSyncing(false);
+                // Refresh the page to show new emails
+                window.location.reload();
+              }
+            }
+          } catch (error) {
+            // Ignore polling errors
+          }
+        }, 2000); // Poll every 2 seconds
+        
+        // Stop polling after 60 seconds
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          setSyncing(false);
+        }, 60000);
       } else {
         throw new Error("Sync failed");
       }
@@ -63,7 +89,6 @@ export function AppHeader({ user }: AppHeaderProps) {
         description: "Could not start email sync. Please try again.",
         variant: "destructive",
       });
-    } finally {
       setSyncing(false);
     }
   };

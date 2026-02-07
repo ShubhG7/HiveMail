@@ -40,6 +40,52 @@ export async function enqueueSyncJob(
   });
 
   // Trigger worker
+  console.log(`[Queue] Enqueued job ${job.id} for user ${userId}, type: ${jobType}`);
+  await triggerWorker({
+    userId,
+    jobType,
+    correlationId,
+    metadata: { jobId: job.id, ...metadata },
+  });
+
+  return job.id;
+}
+
+/**
+ * Trigger a sync job without creating a database record first
+ * Used by webhooks and other automated triggers
+ */
+export async function triggerSyncJob(
+  userId: string,
+  jobType: "BACKFILL" | "INCREMENTAL" | "PROCESS_THREAD" | "PROCESS_MESSAGE",
+  metadata?: Record<string, unknown>
+): Promise<string> {
+  const correlationId = generateCorrelationId();
+
+  // Create job record
+  const job = await prisma.syncJob.create({
+    data: {
+      userId,
+      jobType,
+      status: "PENDING",
+      metadata: metadata as any,
+    },
+  });
+
+  // Log the job creation
+  await prisma.processingLog.create({
+    data: {
+      userId,
+      jobId: job.id,
+      correlationId,
+      level: "info",
+      message: `Triggered ${jobType} job`,
+      metadata: { jobId: job.id, ...metadata },
+    },
+  });
+
+  // Trigger worker
+  console.log(`[Queue] Triggered job ${job.id} for user ${userId}, type: ${jobType}`);
   await triggerWorker({
     userId,
     jobType,
@@ -67,17 +113,60 @@ async function triggerWorker(payload: SyncJobPayload): Promise<void> {
       await enqueueCloudTask(payload);
     } else {
       // Direct HTTP call for local development
-      await fetch(`${workerUrl}/api/jobs`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Correlation-ID": payload.correlationId,
-        },
-        body: JSON.stringify(payload),
+      const url = `${workerUrl}/api/jobs`;
+      console.log(`[Queue] Triggering worker at ${url}`, {
+        userId: payload.userId,
+        jobType: payload.jobType,
+        correlationId: payload.correlationId,
       });
+
+      // Add timeout and better error handling
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Correlation-ID": payload.correlationId,
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        const result = await response.json();
+        
+        if (!response.ok) {
+          console.error(`[Queue] Worker error response:`, {
+            status: response.status,
+            statusText: response.statusText,
+            body: result,
+          });
+          // Don't throw - let the job stay in DB for retry
+          // The worker will update the job status to FAILED
+          return;
+        }
+
+        console.log(`[Queue] Worker response:`, result);
+        
+        // Check if worker returned a failed status
+        if (result.status === "failed") {
+          console.error(`[Queue] Worker reported job failure:`, result.error);
+          // Job status will be updated by worker, don't throw here
+        }
+      } catch (error: any) {
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+          throw new Error('Worker request timed out after 30 seconds');
+        }
+        throw error;
+      }
     }
   } catch (error) {
-    console.error("Failed to trigger worker:", error);
+    console.error("[Queue] Failed to trigger worker:", error);
     // Don't throw - job is still in DB and can be retried
   }
 }

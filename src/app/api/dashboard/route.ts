@@ -10,8 +10,38 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const userId = session.user.id;
+  const workerUrl = process.env.WORKER_BASE_URL;
+
+  // Try to get analytics from worker (DuckDB) first
+  if (workerUrl) {
+    try {
+      const response = await fetch(`${workerUrl}/api/analytics/dashboard?userId=${userId}`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        signal: AbortSignal.timeout(10000), // 10 second timeout
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        return NextResponse.json(data);
+      } else if (response.status === 503) {
+        // DuckDB not available, fall through to PostgreSQL
+        console.log("DuckDB analytics not available, using PostgreSQL fallback");
+      } else {
+        console.error(`Worker analytics failed: ${response.status} ${response.statusText}`);
+        // Fall through to PostgreSQL
+      }
+    } catch (error: any) {
+      // Worker unavailable or timeout, fall back to PostgreSQL
+      console.log("Worker analytics unavailable, using PostgreSQL fallback:", error.message);
+    }
+  }
+
+  // Fallback to PostgreSQL queries (original implementation)
   try {
-    const userId = session.user.id;
     const now = new Date();
     const last7Days = subDays(now, 7);
     const last30Days = subDays(now, 30);

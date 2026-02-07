@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Key, Shield, RefreshCw, Check, ExternalLink, Sparkles, Trash2 } from "lucide-react";
+import { WorkerStatus } from "@/components/worker-status";
 
 interface Settings {
   llmProvider: string;
@@ -45,8 +46,10 @@ const LLM_PROVIDERS = [
   { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash", description: "Best price/performance (Recommended)" },
   { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro", description: "Higher quality responses" },
   { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash", description: "Budget option" },
+  { value: "openai-gpt-4o", label: "OpenAI GPT-4o", description: "Latest OpenAI model (Recommended)" },
   { value: "openai-gpt-4", label: "OpenAI GPT-4", description: "Most capable model" },
   { value: "openai-gpt-4-turbo", label: "OpenAI GPT-4 Turbo", description: "Faster GPT-4 variant" },
+  { value: "openai-gpt-5.2", label: "OpenAI GPT-5.2", description: "Next-generation model" },
   { value: "openai-gpt-3.5-turbo", label: "OpenAI GPT-3.5 Turbo", description: "Fast and affordable" },
   { value: "anthropic-claude-3-5-sonnet", label: "Claude 3.5 Sonnet", description: "Best overall performance" },
   { value: "anthropic-claude-3-opus", label: "Claude 3 Opus", description: "Most capable Claude model" },
@@ -195,11 +198,12 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="p-6 max-w-3xl mx-auto space-y-6 pb-20">
-      <div>
-        <h1 className="text-2xl font-bold">Settings</h1>
-        <p className="text-muted-foreground">Manage your account and preferences</p>
-      </div>
+    <div className="h-full overflow-y-auto">
+      <div className="p-6 max-w-3xl mx-auto space-y-6 pb-20">
+        <div>
+          <h1 className="text-2xl font-bold">Settings</h1>
+          <p className="text-muted-foreground">Manage your account and preferences</p>
+        </div>
 
       {/* API Key Section - Prominent */}
       <Card className={!settings.hasApiKey ? "border-amber-300 dark:border-amber-700" : ""}>
@@ -450,6 +454,13 @@ export default function SettingsPage() {
           <Separator />
 
           <div className="space-y-2">
+            <Label>Worker Status</Label>
+            <WorkerStatus />
+          </div>
+
+          <Separator />
+
+          <div className="space-y-2">
             <Label>Backfill Period</Label>
             <Select
               value={settings.backfillDays.toString()}
@@ -471,6 +482,7 @@ export default function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }

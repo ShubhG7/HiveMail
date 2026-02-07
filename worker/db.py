@@ -5,13 +5,36 @@ from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 from typing import Generator, Any, Optional
 import json
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from config import get_settings
 
 settings = get_settings()
 
+# Remove Prisma-specific query parameters that SQLAlchemy doesn't understand
+def clean_database_url(url: str) -> str:
+    """Remove Prisma-specific parameters from database URL."""
+    parsed = urlparse(url)
+    query_params = parse_qs(parsed.query)
+    
+    # Remove 'schema' parameter (Prisma-specific, not used by SQLAlchemy)
+    if 'schema' in query_params:
+        del query_params['schema']
+    
+    # Rebuild URL without the schema parameter
+    if query_params:
+        new_query = urlencode(query_params, doseq=True)
+        new_parsed = parsed._replace(query=new_query)
+        return urlunparse(new_parsed)
+    else:
+        # No query params left, just remove the query part
+        new_parsed = parsed._replace(query='')
+        return urlunparse(new_parsed).replace('?', '')
+
+database_url = clean_database_url(settings.database_url)
+
 engine = create_engine(
-    settings.database_url,
+    database_url,
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
@@ -73,8 +96,8 @@ def get_user_settings(db: Session, user_id: str) -> Optional[dict]:
     """Get settings for a user."""
     result = db.execute(
         text("""
-            SELECT "llmProvider", "llmApiKeyEnc", "redactionMode", 
-                   "includeLabels", "excludeLabels", "backfillDays"
+            SELECT "llmProvider", "llmApiKeyEnc", "llmBaseUrl", "llmModel",
+                   "redactionMode", "includeLabels", "excludeLabels", "backfillDays"
             FROM "UserSettings"
             WHERE "userId" = :user_id
         """),
@@ -87,10 +110,12 @@ def get_user_settings(db: Session, user_id: str) -> Optional[dict]:
     return {
         "llm_provider": result[0],
         "llm_api_key_enc": result[1],
-        "redaction_mode": result[2],
-        "include_labels": result[3],
-        "exclude_labels": result[4],
-        "backfill_days": result[5],
+        "llm_base_url": result[2],
+        "llm_model": result[3],
+        "redaction_mode": result[4],
+        "include_labels": result[5],
+        "exclude_labels": result[6],
+        "backfill_days": result[7],
     }
 
 
@@ -269,12 +294,298 @@ def log_processing(
 
 
 def update_thread_embedding(db: Session, thread_id: str, embedding: list[float]):
-    """Update thread embedding."""
+    """Update thread embedding.
+    
+    Note: pgvector expects the embedding as a PostgreSQL array literal
+    """
+    # Format embedding as PostgreSQL array literal string
+    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+    
+    # Use PostgreSQL array casting syntax for pgvector
     db.execute(
         text("""
             UPDATE "Thread"
             SET embedding = :embedding::vector
             WHERE id = :thread_id
         """),
-        {"thread_id": thread_id, "embedding": str(embedding)}
+        {"thread_id": thread_id, "embedding": embedding_str}
+    )
+
+
+def compute_and_store_email_stats(db: Session, user_id: str, use_duckdb: bool = True):
+    """
+    Compute email statistics for a user and store them in EmailStats table.
+    
+    This is called after sync completes to pre-compute stats for fast chat queries.
+    
+    Args:
+        db: Database session
+        user_id: User ID
+        use_duckdb: If True, use DuckDB for faster analytics (for large datasets)
+    """
+    from datetime import date
+    
+    today = date.today()
+    
+    # Try using DuckDB for faster analytics if available and enabled
+    if use_duckdb:
+        try:
+            from analytics import get_email_stats_fast, export_email_metadata_to_parquet
+            
+            # Export to Parquet first (this will be cached if recent)
+            export_email_metadata_to_parquet(user_id, force_refresh=False)
+            
+            # Get stats using DuckDB
+            duckdb_stats = get_email_stats_fast(user_id)
+            
+            # Still need thread-level stats from PostgreSQL
+            thread_count = db.execute(
+                text('SELECT COUNT(*) FROM "Thread" WHERE "userId" = :user_id'),
+                {"user_id": user_id}
+            ).scalar() or 0
+            
+            unread_count = db.execute(
+                text('SELECT COUNT(*) FROM "Thread" WHERE "userId" = :user_id AND "isRead" = false'),
+                {"user_id": user_id}
+            ).scalar() or 0
+            
+            needs_reply_count = db.execute(
+                text('SELECT COUNT(*) FROM "Thread" WHERE "userId" = :user_id AND "needsReply" = true'),
+                {"user_id": user_id}
+            ).scalar() or 0
+            
+            # Count rejections, offers, interviews (thread-level, need PostgreSQL)
+            rejection_count = db.execute(
+                text('''
+                    SELECT COUNT(*) FROM "Thread" 
+                    WHERE "userId" = :user_id 
+                    AND category = 'hiring'
+                    AND (
+                        LOWER(subject) LIKE '%unfortunately%'
+                        OR LOWER(subject) LIKE '%regret%'
+                        OR LOWER(subject) LIKE '%not selected%'
+                        OR LOWER(subject) LIKE '%not moving forward%'
+                        OR LOWER(subject) LIKE '%decided to proceed%'
+                        OR LOWER(summary) LIKE '%unfortunately%'
+                        OR LOWER(summary) LIKE '%regret%'
+                        OR LOWER(summary) LIKE '%rejected%'
+                        OR LOWER(summary) LIKE '%not selected%'
+                    )
+                '''),
+                {"user_id": user_id}
+            ).scalar() or 0
+            
+            offer_count = db.execute(
+                text('''
+                    SELECT COUNT(*) FROM "Thread" 
+                    WHERE "userId" = :user_id 
+                    AND category = 'hiring'
+                    AND (
+                        LOWER(subject) LIKE '%offer%'
+                        OR LOWER(subject) LIKE '%congratulations%'
+                        OR LOWER(summary) LIKE '%offer%'
+                        OR LOWER(summary) LIKE '%congratulations%'
+                    )
+                '''),
+                {"user_id": user_id}
+            ).scalar() or 0
+            
+            interview_count = db.execute(
+                text('''
+                    SELECT COUNT(*) FROM "Thread" 
+                    WHERE "userId" = :user_id 
+                    AND category = 'hiring'
+                    AND (
+                        LOWER(subject) LIKE '%interview%'
+                        OR LOWER(subject) LIKE '%phone screen%'
+                        OR LOWER(subject) LIKE '%schedule%call%'
+                        OR LOWER(summary) LIKE '%interview%'
+                    )
+                '''),
+                {"user_id": user_id}
+            ).scalar() or 0
+            
+            # Combine DuckDB message stats with PostgreSQL thread stats
+            db.execute(
+                text('''
+                    INSERT INTO "EmailStats" (
+                        id, "userId", "computedAt", "totalThreads", "totalMessages",
+                        "unreadThreads", "needsReplyCount", "categoryBreakdown",
+                        "topSenders", "rejectionCount", "offerCount",
+                        "createdAt", "updatedAt"
+                    ) VALUES (
+                        gen_random_uuid(), :user_id, NOW(), :total_threads, :total_messages,
+                        :unread_threads, :needs_reply_count, :category_breakdown,
+                        :top_senders, :rejection_count, :offer_count,
+                        NOW(), NOW()
+                    )
+                    ON CONFLICT ("userId") DO UPDATE SET
+                        "totalThreads" = EXCLUDED."totalThreads",
+                        "totalMessages" = EXCLUDED."totalMessages",
+                        "unreadThreads" = EXCLUDED."unreadThreads",
+                        "needsReplyCount" = EXCLUDED."needsReplyCount",
+                        "categoryBreakdown" = EXCLUDED."categoryBreakdown",
+                        "topSenders" = EXCLUDED."topSenders",
+                        "rejectionCount" = EXCLUDED."rejectionCount",
+                        "offerCount" = EXCLUDED."offerCount",
+                        "updatedAt" = NOW()
+                '''),
+                {
+                    "user_id": user_id,
+                    "total_threads": thread_count,
+                    "total_messages": duckdb_stats["total_messages"],
+                    "unread_threads": unread_count,
+                    "needs_reply_count": needs_reply_count,
+                    "category_breakdown": json.dumps(duckdb_stats["category_breakdown"]),
+                    "top_senders": json.dumps(duckdb_stats["top_senders"]),
+                    "rejection_count": rejection_count,
+                    "offer_count": offer_count,
+                }
+            )
+            return  # Successfully used DuckDB, return early
+        except Exception as e:
+            # Fall back to PostgreSQL if DuckDB fails
+            import structlog
+            logger = structlog.get_logger()
+            logger.warning("duckdb_stats_failed_falling_back", user_id=user_id, error=str(e))
+    
+    # Fallback to original PostgreSQL-only approach
+    
+    # Get total counts
+    thread_count = db.execute(
+        text('SELECT COUNT(*) FROM "Thread" WHERE "userId" = :user_id'),
+        {"user_id": user_id}
+    ).scalar() or 0
+    
+    message_count = db.execute(
+        text('SELECT COUNT(*) FROM "Message" WHERE "userId" = :user_id'),
+        {"user_id": user_id}
+    ).scalar() or 0
+    
+    unread_count = db.execute(
+        text('SELECT COUNT(*) FROM "Thread" WHERE "userId" = :user_id AND "isRead" = false'),
+        {"user_id": user_id}
+    ).scalar() or 0
+    
+    needs_reply_count = db.execute(
+        text('SELECT COUNT(*) FROM "Thread" WHERE "userId" = :user_id AND "needsReply" = true'),
+        {"user_id": user_id}
+    ).scalar() or 0
+    
+    # Get category breakdown
+    category_result = db.execute(
+        text('''
+            SELECT category, COUNT(*) as count 
+            FROM "Thread" 
+            WHERE "userId" = :user_id 
+            GROUP BY category
+        '''),
+        {"user_id": user_id}
+    ).fetchall()
+    category_breakdown = {row[0]: row[1] for row in category_result}
+    
+    # Get top senders
+    sender_result = db.execute(
+        text('''
+            SELECT "fromAddress", COUNT(*) as count 
+            FROM "Message" 
+            WHERE "userId" = :user_id 
+            GROUP BY "fromAddress" 
+            ORDER BY count DESC 
+            LIMIT 10
+        '''),
+        {"user_id": user_id}
+    ).fetchall()
+    top_senders = [{"email": row[0], "count": row[1]} for row in sender_result]
+    
+    # Count rejections (job-related)
+    rejection_count = db.execute(
+        text('''
+            SELECT COUNT(*) FROM "Thread" 
+            WHERE "userId" = :user_id 
+            AND category = 'hiring'
+            AND (
+                LOWER(subject) LIKE '%unfortunately%'
+                OR LOWER(subject) LIKE '%regret%'
+                OR LOWER(subject) LIKE '%not selected%'
+                OR LOWER(subject) LIKE '%not moving forward%'
+                OR LOWER(subject) LIKE '%decided to proceed%'
+                OR LOWER(summary) LIKE '%unfortunately%'
+                OR LOWER(summary) LIKE '%regret%'
+                OR LOWER(summary) LIKE '%rejected%'
+                OR LOWER(summary) LIKE '%not selected%'
+            )
+        '''),
+        {"user_id": user_id}
+    ).scalar() or 0
+    
+    # Count offers
+    offer_count = db.execute(
+        text('''
+            SELECT COUNT(*) FROM "Thread" 
+            WHERE "userId" = :user_id 
+            AND category = 'hiring'
+            AND (
+                LOWER(subject) LIKE '%offer%'
+                OR LOWER(subject) LIKE '%congratulations%'
+                OR LOWER(summary) LIKE '%offer%'
+                OR LOWER(summary) LIKE '%congratulations%'
+            )
+        '''),
+        {"user_id": user_id}
+    ).scalar() or 0
+    
+    # Count interview requests
+    interview_count = db.execute(
+        text('''
+            SELECT COUNT(*) FROM "Thread" 
+            WHERE "userId" = :user_id 
+            AND category = 'hiring'
+            AND (
+                LOWER(subject) LIKE '%interview%'
+                OR LOWER(subject) LIKE '%phone screen%'
+                OR LOWER(subject) LIKE '%schedule%call%'
+                OR LOWER(summary) LIKE '%interview%'
+            )
+        '''),
+        {"user_id": user_id}
+    ).scalar() or 0
+    
+    # Upsert the stats (schema uses userId as unique, not userId + date)
+    db.execute(
+        text('''
+            INSERT INTO "EmailStats" (
+                id, "userId", "computedAt", "totalThreads", "totalMessages",
+                "unreadThreads", "needsReplyCount", "categoryBreakdown",
+                "topSenders", "rejectionCount", "offerCount",
+                "createdAt", "updatedAt"
+            ) VALUES (
+                gen_random_uuid(), :user_id, NOW(), :total_threads, :total_messages,
+                :unread_threads, :needs_reply_count, :category_breakdown,
+                :top_senders, :rejection_count, :offer_count,
+                NOW(), NOW()
+            )
+            ON CONFLICT ("userId") DO UPDATE SET
+                "totalThreads" = EXCLUDED."totalThreads",
+                "totalMessages" = EXCLUDED."totalMessages",
+                "unreadThreads" = EXCLUDED."unreadThreads",
+                "needsReplyCount" = EXCLUDED."needsReplyCount",
+                "categoryBreakdown" = EXCLUDED."categoryBreakdown",
+                "topSenders" = EXCLUDED."topSenders",
+                "rejectionCount" = EXCLUDED."rejectionCount",
+                "offerCount" = EXCLUDED."offerCount",
+                "computedAt" = NOW(),
+                "updatedAt" = NOW()
+        '''),
+        {
+            "user_id": user_id,
+            "total_threads": thread_count,
+            "total_messages": message_count,
+            "unread_threads": unread_count,
+            "needs_reply_count": needs_reply_count,
+            "category_breakdown": json.dumps(category_breakdown),
+            "top_senders": json.dumps(top_senders),
+            "rejection_count": rejection_count,
+            "offer_count": offer_count,
+        }
     )

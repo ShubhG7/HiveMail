@@ -27,6 +27,7 @@ model User {
   tasks         Task[]
   customBins    CustomBin[]
   chatSessions  ChatSession[]
+  emailStats    EmailStats?
 }
 
 model Account {
@@ -77,6 +78,8 @@ model OAuthToken {
   expiry          DateTime?
   scope           String?
   historyId       String?  // Gmail history ID for incremental sync
+  watchExpiration DateTime?  // When Gmail watch subscription expires
+  watchTopic      String?    // Pub/Sub topic for webhooks (if using GCP)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -110,6 +113,28 @@ enum RedactionMode {
   OFF
   REDACT_BEFORE_LLM
   SUMMARIES_ONLY
+}
+
+model EmailStats {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  computedAt      DateTime @default(now())
+  totalThreads   Int      @default(0)
+  totalMessages  Int      @default(0)
+  unreadThreads  Int      @default(0)
+  needsReplyCount Int     @default(0)
+  threadsThisWeek Int     @default(0)
+  threadsThisMonth Int     @default(0)
+  rejectionCount Int      @default(0)
+  offerCount     Int      @default(0)
+  categoryBreakdown Json   // { category: count }
+  topSenders     Json     // [{ email, count }]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Thread {
@@ -320,3 +345,5 @@ model ProcessingLog {
   @@index([correlationId])
   @@index([createdAt])
 }
+
+  

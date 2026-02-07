@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -72,21 +73,21 @@ export function ThreadList({
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-w-0 overflow-hidden">
       {/* Header */}
-      <div className="p-4 border-b">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-lg">{getTitle()}</h2>
-          {loading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
+      <div className="p-4 border-b min-w-0 overflow-hidden">
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <h2 className="font-semibold text-lg truncate min-w-0">{getTitle()}</h2>
+          {loading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground shrink-0" />}
         </div>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-muted-foreground truncate">
           {pagination.total} {pagination.total === 1 ? "thread" : "threads"}
         </p>
       </div>
 
       {/* Thread List */}
-      <ScrollArea className="flex-1">
-        <div className="divide-y">
+      <ScrollArea className="flex-1 min-w-0">
+        <div className="divide-y min-w-0">
           {threads.map((thread) => (
             <ThreadItem
               key={thread.id}
@@ -105,16 +106,17 @@ export function ThreadList({
 
       {/* Pagination */}
       {pagination.totalPages > 1 && (
-        <div className="p-2 border-t flex items-center justify-between">
+        <div className="p-2 border-t flex items-center justify-between gap-2 min-w-0 overflow-hidden">
           <Button
             variant="ghost"
             size="sm"
             onClick={() => onPageChange(pagination.page - 1)}
             disabled={pagination.page <= 1}
+            className="shrink-0"
           >
             <ChevronLeft className="w-4 h-4" />
           </Button>
-          <span className="text-sm text-muted-foreground">
+          <span className="text-sm text-muted-foreground truncate min-w-0 text-center">
             Page {pagination.page} of {pagination.totalPages}
           </span>
           <Button
@@ -122,6 +124,7 @@ export function ThreadList({
             size="sm"
             onClick={() => onPageChange(pagination.page + 1)}
             disabled={pagination.page >= pagination.totalPages}
+            className="shrink-0"
           >
             <ChevronRight className="w-4 h-4" />
           </Button>
@@ -131,7 +134,7 @@ export function ThreadList({
   );
 }
 
-function ThreadItem({
+const ThreadItem = memo(function ThreadItem({
   thread,
   isSelected,
   onClick,
@@ -147,61 +150,88 @@ function ThreadItem({
     <button
       onClick={onClick}
       className={cn(
-        "w-full p-4 text-left transition-colors hover:bg-muted/50",
+        "w-full p-4 text-left transition-colors hover:bg-muted/50 overflow-hidden min-w-0",
         isSelected && "bg-primary/5 border-l-2 border-l-primary",
         !thread.isRead && "bg-primary/5"
       )}
     >
-      <div className="flex gap-3">
-        <Avatar className="h-10 w-10 shrink-0">
+      <div className="flex gap-3 min-w-0">
+        <Avatar className="h-10 w-10 shrink-0 flex-shrink-0">
           <AvatarFallback className={cn(category.bgColor, category.color)}>
             {getInitials(sender)}
           </AvatarFallback>
         </Avatar>
-        <div className="flex-1 min-w-0 space-y-1">
-          <div className="flex items-center justify-between gap-2">
+        <div className="flex-1 min-w-0 overflow-hidden space-y-1">
+          <div className="flex items-center justify-between gap-2 min-w-0">
             <span className={cn(
-              "font-medium truncate",
+              "font-medium truncate min-w-0",
               !thread.isRead && "font-semibold"
             )}>
               {sender}
             </span>
-            <span className="text-xs text-muted-foreground shrink-0">
+            <span className="text-xs text-muted-foreground shrink-0 whitespace-nowrap flex-shrink-0">
               {formatDate(thread.lastMessageAt)}
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <span className={cn(
-              "text-sm truncate",
+              "text-sm truncate min-w-0",
               !thread.isRead && "font-medium"
             )}>
               {thread.subject || "(No subject)"}
             </span>
             {thread.messageCount > 1 && (
-              <span className="text-xs text-muted-foreground shrink-0">
+              <span className="text-xs text-muted-foreground shrink-0 whitespace-nowrap flex-shrink-0">
                 ({thread.messageCount})
               </span>
             )}
           </div>
-          <p className="text-sm text-muted-foreground truncate">
+          <p className="text-sm text-muted-foreground truncate min-w-0">
             {thread.summaryShort || thread.latestMessage?.snippet || ""}
           </p>
-          <div className="flex items-center gap-2 mt-1">
-            <Badge variant={thread.category as any} className="text-xs">
+          <div className="flex items-center gap-2 mt-1 flex-wrap">
+            <Badge variant={thread.category as any} className="text-xs shrink-0">
               {category.name}
             </Badge>
             {thread.needsReply && (
-              <span className="flex items-center text-xs text-amber-600">
-                <Clock className="w-3 h-3 mr-1" />
+              <span className="flex items-center text-xs text-amber-600 shrink-0 whitespace-nowrap">
+                <Clock className="w-3 h-3 mr-1 shrink-0" />
                 Reply needed
               </span>
             )}
             {thread.isStarred && (
-              <Star className="w-3 h-3 fill-yellow-400 text-yellow-400" />
+              <Star className="w-3 h-3 fill-yellow-400 text-yellow-400 shrink-0 flex-shrink-0" />
             )}
           </div>
         </div>
       </div>
     </button>
   );
-}
+}, (prevProps, nextProps) => {
+  // Only re-render if selection state or thread data actually changed
+  const prevDate = prevProps.thread.lastMessageAt instanceof Date 
+    ? prevProps.thread.lastMessageAt.getTime() 
+    : prevProps.thread.lastMessageAt 
+      ? new Date(prevProps.thread.lastMessageAt).getTime() 
+      : null;
+  const nextDate = nextProps.thread.lastMessageAt instanceof Date 
+    ? nextProps.thread.lastMessageAt.getTime() 
+    : nextProps.thread.lastMessageAt 
+      ? new Date(nextProps.thread.lastMessageAt).getTime() 
+      : null;
+  
+  return (
+    prevProps.isSelected === nextProps.isSelected &&
+    prevProps.thread.id === nextProps.thread.id &&
+    prevProps.thread.isRead === nextProps.thread.isRead &&
+    prevProps.thread.isStarred === nextProps.thread.isStarred &&
+    prevProps.thread.needsReply === nextProps.thread.needsReply &&
+    prevProps.thread.category === nextProps.thread.category &&
+    prevProps.thread.subject === nextProps.thread.subject &&
+    prevProps.thread.summaryShort === nextProps.thread.summaryShort &&
+    prevDate === nextDate &&
+    prevProps.thread.latestMessage?.fromName === nextProps.thread.latestMessage?.fromName &&
+    prevProps.thread.latestMessage?.fromAddress === nextProps.thread.latestMessage?.fromAddress &&
+    prevProps.thread.latestMessage?.snippet === nextProps.thread.latestMessage?.snippet
+  );
+});

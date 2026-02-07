@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -56,6 +56,30 @@ export function ApiKeyDialog({
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Load existing settings when dialog opens
+  useEffect(() => {
+    if (open) {
+      fetch("/api/settings")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.llmProvider) {
+            setProvider(data.llmProvider);
+          }
+          if (data.llmBaseUrl) {
+            setBaseUrl(data.llmBaseUrl);
+          }
+          if (data.llmModel) {
+            setModel(data.llmModel);
+          }
+          // Don't pre-fill API key for security
+          setApiKey("");
+        })
+        .catch(() => {
+          // Ignore errors
+        });
+    }
+  }, [open]);
 
   const handleSubmit = async () => {
     if (!apiKey.trim()) {

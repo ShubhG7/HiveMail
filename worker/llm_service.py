@@ -2,13 +2,17 @@
 
 import re
 import json
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.language_models import BaseChatModel
 
 from encryption import decrypt
+from error_handling import classify_llm_error, LLMError
 
 
 class ClassificationResult(BaseModel):
@@ -37,27 +41,235 @@ class ExtractionResult(BaseModel):
 
 
 MODEL_MAP = {
-    "gemini-2.5-flash": "gemini-2.5-flash-preview-05-20",
-    "gemini-2.5-pro": "gemini-2.5-pro-preview-05-06",
+    "gemini-2.5-flash": "gemini-2.0-flash",  # Using stable model
+    "gemini-2.5-pro": "gemini-1.5-pro",  # Using stable model
     "gemini-2.0-flash": "gemini-2.0-flash",
+    "openai-gpt-4o": "gpt-4o",
+    "openai-gpt-4": "gpt-4",
+    "openai-gpt-4-turbo": "gpt-4-turbo-preview",
+    "openai-gpt-3.5-turbo": "gpt-3.5-turbo",
+    "openai-gpt-5.2": "gpt-4o",  # Fallback to gpt-4o
+    "anthropic-claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
+    "anthropic-claude-3-opus": "claude-3-opus-20240229",
+    "anthropic-claude-3-haiku": "claude-3-haiku-20240307",
 }
 
 
-def get_llm(api_key_enc: str, model: str = "gemini-2.5-flash") -> ChatGoogleGenerativeAI:
-    """Get an LLM instance."""
+def get_llm(
+    api_key_enc: str, 
+    provider: str = "gemini-2.5-flash",
+    base_url: Optional[str] = None,
+    model: Optional[str] = None
+) -> BaseChatModel:
+    """Get an LLM instance based on provider."""
     api_key = decrypt(api_key_enc)
-    model_name = MODEL_MAP.get(model, MODEL_MAP["gemini-2.5-flash"])
     
-    return ChatGoogleGenerativeAI(
-        model=model_name,
-        google_api_key=api_key,
-        temperature=0.2,
-        max_tokens=4096,
-    )
+    llm_instance = None
+    
+    if provider.startswith("gemini-"):
+        model_name = MODEL_MAP.get(provider, MODEL_MAP["gemini-2.5-flash"])
+        llm_instance = ChatGoogleGenerativeAI(
+            model=model_name,
+            google_api_key=api_key,
+            temperature=0.2,
+            max_tokens=4096,
+        )
+    elif provider.startswith("openai-"):
+        model_name = MODEL_MAP.get(provider, "gpt-3.5-turbo")
+        # Newer models (GPT-4o, GPT-5.2) use max_completion_tokens instead of max_tokens
+        is_new_model = "gpt-4o" in model_name or "gpt-5" in model_name or "o1" in model_name
+        
+        llm_kwargs = {
+            "model": model_name,
+            "api_key": api_key,
+            "temperature": 0.2,
+        }
+        
+        if is_new_model:
+            llm_kwargs["max_completion_tokens"] = 4096
+        else:
+            llm_kwargs["max_tokens"] = 4096
+        
+        llm_instance = ChatOpenAI(**llm_kwargs)
+    elif provider.startswith("anthropic-"):
+        model_name = MODEL_MAP.get(provider, "claude-3-haiku-20240307")
+        llm_instance = ChatAnthropic(
+            model=model_name,
+            api_key=api_key,
+            temperature=0.2,
+            max_tokens=4096,
+        )
+    elif provider == "custom":
+        if not base_url or not model:
+            raise ValueError("Custom provider requires base_url and model")
+        # Use OpenAI-compatible interface for custom providers
+        llm_instance = ChatOpenAI(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=0.2,
+            max_tokens=4096,
+        )
+    else:
+        # Fallback to Gemini
+        llm_instance = ChatGoogleGenerativeAI(
+            model=MODEL_MAP["gemini-2.5-flash"],
+            google_api_key=api_key,
+            temperature=0.2,
+            max_tokens=4096,
+        )
+    
+    # Store provider for error handling
+    llm_instance._provider = provider
+    return llm_instance
+
+
+def classify_with_rules(
+    subject: str,
+    from_address: str,
+    snippet: str,
+    body_preview: str,
+    labels: List[str],
+) -> Optional[ClassificationResult]:
+    """Classify email using rule-based heuristics. Returns None if no match."""
+    subject_lower = (subject or "").lower()
+    from_lower = (from_address or "").lower()
+    snippet_lower = (snippet or "").lower()
+    body_lower = (body_preview or "").lower()
+    combined_text = f"{subject_lower} {snippet_lower} {body_lower}".lower()
+    
+    # Extract domain from email
+    domain = ""
+    if "@" in from_address:
+        domain = from_address.split("@")[1].lower()
+    
+    # Rule 1: Newsletters
+    newsletter_domains = [
+        "mailchimp.com", "substack.com", "medium.com", "ghost.org",
+        "convertkit.com", "mailerlite.com", "constantcontact.com",
+        "campaignmonitor.com", "aweber.com", "getresponse.com"
+    ]
+    newsletter_keywords = ["newsletter", "unsubscribe", "manage preferences", "email preferences"]
+    if any(nd in domain for nd in newsletter_domains) or \
+       any(keyword in combined_text for keyword in newsletter_keywords) or \
+       "unsubscribe" in combined_text:
+        return ClassificationResult(
+            category="newsletters",
+            priority="LOW",
+            needs_reply=False,
+            spam_score=0.1,
+            sensitive_flags=[],
+            confidence=0.9
+        )
+    
+    # Rule 2: Receipts
+    receipt_domains = [
+        "amazon.com", "stripe.com", "paypal.com", "square.com",
+        "shopify.com", "etsy.com", "ebay.com", "apple.com",
+        "google.com", "microsoft.com"
+    ]
+    receipt_keywords = ["receipt", "order confirmation", "order #", "invoice #", "purchase confirmation"]
+    if any(rd in domain for rd in receipt_domains) and \
+       any(keyword in combined_text for keyword in receipt_keywords):
+        return ClassificationResult(
+            category="receipts",
+            priority="LOW",
+            needs_reply=False,
+            spam_score=0.0,
+            sensitive_flags=[],
+            confidence=0.95
+        )
+    
+    # Rule 3: Shipping
+    shipping_domains = [
+        "ups.com", "fedex.com", "usps.com", "dhl.com",
+        "ontrac.com", "lasership.com", "amazon.com"
+    ]
+    shipping_keywords = ["tracking", "shipped", "delivery", "out for delivery", "package", "parcel"]
+    if any(sd in domain for sd in shipping_domains) or \
+       any(keyword in combined_text for keyword in shipping_keywords):
+        return ClassificationResult(
+            category="shipping",
+            priority="NORMAL",
+            needs_reply=False,
+            spam_score=0.0,
+            sensitive_flags=[],
+            confidence=0.9
+        )
+    
+    # Rule 4: Bills
+    bill_keywords = ["bill", "invoice", "payment due", "statement", "amount due", "pay now"]
+    if any(keyword in combined_text for keyword in bill_keywords):
+        return ClassificationResult(
+            category="bills",
+            priority="HIGH",
+            needs_reply=False,
+            spam_score=0.0,
+            sensitive_flags=[],
+            confidence=0.85
+        )
+    
+    # Rule 5: Social
+    social_domains = [
+        "facebook.com", "twitter.com", "linkedin.com", "instagram.com",
+        "tiktok.com", "pinterest.com", "reddit.com", "discord.com"
+    ]
+    if any(sd in domain for sd in social_domains):
+        return ClassificationResult(
+            category="social",
+            priority="LOW",
+            needs_reply=False,
+            spam_score=0.2,
+            sensitive_flags=[],
+            confidence=0.9
+        )
+    
+    # Rule 6: School
+    school_keywords = ["course", "assignment", "grade", "homework", "syllabus", "lecture"]
+    if domain.endswith(".edu") or any(keyword in combined_text for keyword in school_keywords):
+        return ClassificationResult(
+            category="school",
+            priority="NORMAL",
+            needs_reply=True,  # School emails often need replies
+            spam_score=0.0,
+            sensitive_flags=[],
+            confidence=0.85
+        )
+    
+    # Rule 7: Hiring/Recruiting
+    hiring_keywords = ["job", "position", "opportunity", "interview", "recruiter", "application", "resume"]
+    hiring_domains = ["linkedin.com", "indeed.com", "glassdoor.com", "monster.com"]
+    if any(hd in domain for hd in hiring_domains) or \
+       any(keyword in combined_text for keyword in hiring_keywords):
+        return ClassificationResult(
+            category="hiring",
+            priority="HIGH",
+            needs_reply=True,
+            spam_score=0.1,
+            sensitive_flags=[],
+            confidence=0.8
+        )
+    
+    # Rule 8: Finance
+    finance_keywords = ["bank", "account", "transaction", "balance", "statement", "investment"]
+    finance_domains = ["chase.com", "bankofamerica.com", "wellsfargo.com", "citi.com"]
+    if any(fd in domain for fd in finance_domains) or \
+       any(keyword in combined_text for keyword in finance_keywords):
+        return ClassificationResult(
+            category="finance",
+            priority="HIGH",
+            needs_reply=False,
+            spam_score=0.0,
+            sensitive_flags=["bank_account"],
+            confidence=0.85
+        )
+    
+    # No rule matched - return None to use LLM
+    return None
 
 
 def classify_email(
-    llm: ChatGoogleGenerativeAI,
+    llm: BaseChatModel,
     subject: str,
     from_address: str,
     snippet: str,
@@ -98,19 +310,24 @@ Body preview: {body_preview}""")
     parser = JsonOutputParser(pydantic_object=ClassificationResult)
     chain = prompt | llm | parser
     
-    result = chain.invoke({
-        "subject": subject or "(No subject)",
-        "from_address": from_address,
-        "labels": ", ".join(labels) if labels else "None",
-        "snippet": snippet or "",
-        "body_preview": (body_preview or "")[:500],
-    })
-    
-    return ClassificationResult(**result)
+    try:
+        result = chain.invoke({
+            "subject": subject or "(No subject)",
+            "from_address": from_address,
+            "labels": ", ".join(labels) if labels else "None",
+            "snippet": snippet or "",
+            "body_preview": (body_preview or "")[:500],
+        })
+        
+        return ClassificationResult(**result)
+    except Exception as e:
+        # Re-raise as classified LLM error
+        provider = getattr(llm, '_provider', 'unknown')
+        raise classify_llm_error(e, provider) from e
 
 
 def summarize_thread(
-    llm: ChatGoogleGenerativeAI,
+    llm: BaseChatModel,
     subject: str,
     messages: List[Dict[str, str]],
     previous_summary: Optional[str] = None,
@@ -147,17 +364,21 @@ Messages:
     parser = JsonOutputParser(pydantic_object=SummaryResult)
     chain = prompt | llm | parser
     
-    result = chain.invoke({
-        "subject": subject or "(No subject)",
-        "messages_text": messages_text,
-        "previous_summary_text": previous_summary_text,
-    })
-    
-    return SummaryResult(**result)
+    try:
+        result = chain.invoke({
+            "subject": subject or "(No subject)",
+            "messages_text": messages_text,
+            "previous_summary_text": previous_summary_text,
+        })
+        
+        return SummaryResult(**result)
+    except Exception as e:
+        provider = getattr(llm, '_provider', 'unknown')
+        raise classify_llm_error(e, provider) from e
 
 
 def extract_from_email(
-    llm: ChatGoogleGenerativeAI,
+    llm: BaseChatModel,
     subject: str,
     body: str,
 ) -> ExtractionResult:
@@ -185,27 +406,47 @@ Body: {body}""")
     parser = JsonOutputParser(pydantic_object=ExtractionResult)
     chain = prompt | llm | parser
     
-    result = chain.invoke({
-        "subject": subject or "(No subject)",
-        "body": (body or "")[:2000],
-    })
-    
-    return ExtractionResult(**result)
+    try:
+        result = chain.invoke({
+            "subject": subject or "(No subject)",
+            "body": (body or "")[:2000],
+        })
+        
+        return ExtractionResult(**result)
+    except Exception as e:
+        provider = getattr(llm, '_provider', 'unknown')
+        raise classify_llm_error(e, provider) from e
 
 
-def generate_embedding(api_key_enc: str, text: str) -> List[float]:
-    """Generate an embedding for text using Google's embedding model."""
-    import google.generativeai as genai
-    
-    api_key = decrypt(api_key_enc)
-    genai.configure(api_key=api_key)
-    
-    result = genai.embed_content(
-        model="models/text-embedding-004",
-        content=text[:2048],
-    )
-    
-    return result['embedding']
+def generate_embedding(api_key_enc: str, text: str, provider: str = "gemini") -> Optional[List[float]]:
+    """Generate an embedding for text. Returns None if provider doesn't support embeddings."""
+    try:
+        if provider.startswith("gemini-"):
+            import google.generativeai as genai
+            api_key = decrypt(api_key_enc)
+            genai.configure(api_key=api_key)
+            result = genai.embed_content(
+                model="models/text-embedding-004",
+                content=text[:2048],
+            )
+            return result['embedding']
+        elif provider.startswith("openai-"):
+            import openai
+            api_key = decrypt(api_key_enc)
+            client = openai.OpenAI(api_key=api_key)
+            response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=text[:2048],
+            )
+            return response.data[0].embedding
+        else:
+            # Anthropic and custom providers don't have embedding APIs
+            # Return None to skip embedding generation
+            return None
+    except Exception as e:
+        # If embedding fails, return None (embeddings are optional)
+        print(f"Warning: Failed to generate embedding: {e}")
+        return None
 
 
 # Sensitive content detection patterns

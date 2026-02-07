@@ -3,6 +3,9 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AppHeader } from "@/components/app-header";
+import { ApiKeyBanner } from "@/components/api-key-banner";
+import { SyncProgress } from "@/components/sync-progress";
+import { AppLayoutClient } from "@/components/app-layout-client";
 
 export default async function AppLayout({
   children,
@@ -25,12 +28,18 @@ export default async function AppLayout({
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      <AppSidebar user={session.user} />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <AppHeader user={session.user} />
-        <main className="flex-1 overflow-hidden">{children}</main>
+    <AppLayoutClient>
+      <div className="flex h-screen overflow-hidden bg-background">
+        <AppSidebar user={session.user} />
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <AppHeader user={session.user} />
+          <div className="px-4">
+            <ApiKeyBanner />
+            <SyncProgress />
+          </div>
+          <main className="flex-1 overflow-auto">{children}</main>
+        </div>
       </div>
-    </div>
+    </AppLayoutClient>
   );
 }

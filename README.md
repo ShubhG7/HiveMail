@@ -99,6 +99,11 @@ openssl rand -base64 32
 # Start PostgreSQL and Redis (if using Docker)
 docker compose up -d postgres redis
 
+# Start the Python worker (in a separate terminal)
+cd worker
+python -m uvicorn main:app --reload --port 8000
+cd ..
+
 # Or use your own PostgreSQL instance
 # Update DATABASE_URL in .env.local
 
@@ -113,7 +118,39 @@ cd worker
 python main.py
 ```
 
-### 5. Access the App
+### 5. Check Worker Status
+
+You can check if the worker is running in several ways:
+
+**Option 1: Via Settings Page (Recommended)**
+- Go to Settings → Email Sync
+- Look for the "Worker Status" section
+- It will show "Healthy" if the worker is running, or "Unavailable" if not
+
+**Option 2: Via Terminal Script**
+```bash
+./scripts/check-worker.sh
+```
+
+**Option 3: Direct HTTP Check**
+```bash
+curl http://localhost:8000/health
+# Should return: {"status":"healthy","timestamp":"..."}
+```
+
+**Option 4: Via API**
+```bash
+curl http://localhost:3000/api/worker/health
+# Returns worker health status
+```
+
+If the worker is not running, start it:
+```bash
+cd worker
+python -m uvicorn main:app --reload --port 8000
+```
+
+### 6. Access the App
 
 Open [http://localhost:3000](http://localhost:3000)
 

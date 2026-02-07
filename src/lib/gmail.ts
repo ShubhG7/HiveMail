@@ -394,49 +394,131 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
+export interface Attachment {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+}
+
 /**
  * Send an email reply using Gmail API
  */
 export async function sendReply(
   gmail: gmail_v1.Gmail,
   options: {
-    threadId: string;
+    threadId?: string;
     to: string[];
     cc?: string[];
+    bcc?: string[];
     subject: string;
     body: string;
+    bodyHtml?: string;
+    attachments?: Attachment[];
     inReplyTo?: string;
     references?: string;
   }
 ): Promise<string> {
   const boundary = "boundary_" + Date.now();
+  const hasAttachments = options.attachments && options.attachments.length > 0;
+  const isHtml = !!options.bodyHtml;
 
-  const emailLines = [
+  // Build email headers
+  const emailParts: string[] = [
     `To: ${options.to.join(", ")}`,
     ...(options.cc?.length ? [`Cc: ${options.cc.join(", ")}`] : []),
+    ...(options.bcc?.length ? [`Bcc: ${options.bcc.join(", ")}`] : []),
     `Subject: ${options.subject}`,
     "MIME-Version: 1.0",
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
     ...(options.inReplyTo ? [`In-Reply-To: ${options.inReplyTo}`] : []),
     ...(options.references ? [`References: ${options.references}`] : []),
-    "",
-    `--${boundary}`,
-    "Content-Type: text/plain; charset=UTF-8",
-    "",
-    options.body,
-    "",
-    `--${boundary}--`,
   ];
 
-  const email = emailLines.join("\r\n");
+  if (hasAttachments) {
+    // Multipart/mixed for attachments
+    emailParts.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+    emailParts.push("");
+
+    // Add message body as multipart/alternative
+    const altBoundary = "alt_" + Date.now();
+    emailParts.push(`--${boundary}`);
+    emailParts.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`);
+    emailParts.push("");
+
+    // Plain text part
+    emailParts.push(`--${altBoundary}`);
+    emailParts.push("Content-Type: text/plain; charset=UTF-8");
+    emailParts.push("Content-Transfer-Encoding: 7bit");
+    emailParts.push("");
+    emailParts.push(options.body);
+    emailParts.push("");
+
+    // HTML part if provided
+    if (isHtml) {
+      emailParts.push(`--${altBoundary}`);
+      emailParts.push("Content-Type: text/html; charset=UTF-8");
+      emailParts.push("Content-Transfer-Encoding: 7bit");
+      emailParts.push("");
+      emailParts.push(options.bodyHtml!);
+      emailParts.push("");
+    }
+
+    emailParts.push(`--${altBoundary}--`);
+
+    // Add attachments
+    for (const attachment of options.attachments!) {
+      emailParts.push(`--${boundary}`);
+      emailParts.push(`Content-Type: ${attachment.contentType}`);
+      emailParts.push(`Content-Disposition: attachment; filename="${attachment.filename}"`);
+      emailParts.push("Content-Transfer-Encoding: base64");
+      emailParts.push("");
+      emailParts.push(attachment.content.toString("base64"));
+      emailParts.push("");
+    }
+
+    emailParts.push(`--${boundary}--`);
+  } else {
+    // Simple multipart/alternative for text/html
+    if (isHtml) {
+      emailParts.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+      emailParts.push("");
+
+      // Plain text
+      emailParts.push(`--${boundary}`);
+      emailParts.push("Content-Type: text/plain; charset=UTF-8");
+      emailParts.push("");
+      emailParts.push(options.body);
+      emailParts.push("");
+
+      // HTML
+      emailParts.push(`--${boundary}`);
+      emailParts.push("Content-Type: text/html; charset=UTF-8");
+      emailParts.push("");
+      emailParts.push(options.bodyHtml!);
+      emailParts.push("");
+
+      emailParts.push(`--${boundary}--`);
+    } else {
+      // Plain text only
+      emailParts.push("Content-Type: text/plain; charset=UTF-8");
+      emailParts.push("");
+      emailParts.push(options.body);
+    }
+  }
+
+  const email = emailParts.join("\r\n");
   const encodedEmail = Buffer.from(email).toString("base64url");
+
+  const requestBody: gmail_v1.Schema$Message = {
+    raw: encodedEmail,
+  };
+
+  if (options.threadId) {
+    requestBody.threadId = options.threadId;
+  }
 
   const response = await gmail.users.messages.send({
     userId: "me",
-    requestBody: {
-      raw: encodedEmail,
-      threadId: options.threadId,
-    },
+    requestBody,
   });
 
   return response.data.id!;
@@ -468,4 +550,141 @@ export function getGmailMessageLink(messageId: string): string {
  */
 export function getGmailThreadLink(threadId: string): string {
   return `https://mail.google.com/mail/u/0/#inbox/${threadId}`;
+}
+
+/**
+ * Setup Gmail push notifications using Watch API
+ * Requires a public webhook URL that Gmail can POST to
+ */
+export async function watchGmail(
+  gmail: gmail_v1.Gmail,
+  webhookUrl: string,
+  topicName?: string
+): Promise<{
+  expiration: number;
+  historyId: string;
+}> {
+  const requestBody: gmail_v1.Schema$WatchRequest = {
+    topicName: topicName || undefined,
+    labelIds: ["INBOX"], // Watch for inbox messages
+  };
+
+  // If no topicName provided, Gmail will use the webhook URL directly
+  // For production, you should use Google Cloud Pub/Sub
+  const response = await gmail.users.watch({
+    userId: "me",
+    requestBody,
+  });
+
+  return {
+    expiration: response.data.expiration || 0,
+    historyId: response.data.historyId || "",
+  };
+}
+
+/**
+ * Stop Gmail push notifications
+ */
+export async function stopWatchGmail(
+  gmail: gmail_v1.Gmail
+): Promise<void> {
+  await gmail.users.stop({
+    userId: "me",
+  });
+}
+
+/**
+ * Setup Gmail push notifications using Watch API
+ * 
+ * This registers the user's Gmail account to send push notifications
+ * to our Pub/Sub topic when new emails arrive.
+ * 
+ * Prerequisites:
+ * 1. Create a Cloud Pub/Sub topic (e.g., projects/your-project/topics/gmail-push)
+ * 2. Grant Gmail publish permissions to the topic
+ * 3. Set GOOGLE_PUBSUB_TOPIC env var
+ * 
+ * @returns The expiration time of the watch (typically 7 days)
+ */
+export async function setupGmailWatch(gmail: gmail_v1.Gmail): Promise<{
+  historyId: string;
+  expiration: number;
+} | null> {
+  const topicName = process.env.GOOGLE_PUBSUB_TOPIC;
+  
+  if (!topicName) {
+    console.warn("[Gmail Watch] GOOGLE_PUBSUB_TOPIC not configured, skipping watch setup");
+    return null;
+  }
+
+  try {
+    const response = await gmail.users.watch({
+      userId: "me",
+      requestBody: {
+        topicName,
+        labelIds: ["INBOX"], // Only watch inbox for new emails
+        labelFilterBehavior: "INCLUDE",
+      },
+    });
+
+    console.log("[Gmail Watch] Watch registered successfully", {
+      historyId: response.data.historyId,
+      expiration: response.data.expiration,
+    });
+
+    return {
+      historyId: response.data.historyId!,
+      expiration: parseInt(response.data.expiration!),
+    };
+  } catch (error: any) {
+    console.error("[Gmail Watch] Failed to setup watch", {
+      error: error.message,
+      code: error.code,
+    });
+    return null;
+  }
+}
+
+/**
+ * Stop Gmail push notifications
+ */
+export async function stopGmailWatch(gmail: gmail_v1.Gmail): Promise<boolean> {
+  try {
+    await gmail.users.stop({ userId: "me" });
+    console.log("[Gmail Watch] Watch stopped successfully");
+    return true;
+  } catch (error: any) {
+    console.error("[Gmail Watch] Failed to stop watch", {
+      error: error.message,
+    });
+    return false;
+  }
+}
+
+/**
+ * Check if Gmail watch is active and renew if needed
+ * 
+ * Gmail watches expire after 7 days, so this should be called
+ * periodically (e.g., daily via cron) to renew them.
+ */
+export async function renewGmailWatchIfNeeded(
+  gmail: gmail_v1.Gmail,
+  currentExpiration: number | null
+): Promise<{
+  historyId: string;
+  expiration: number;
+} | null> {
+  // Renew if expiration is within 24 hours or unknown
+  const renewThreshold = Date.now() + 24 * 60 * 60 * 1000;
+  
+  if (!currentExpiration || currentExpiration < renewThreshold) {
+    console.log("[Gmail Watch] Watch expiring soon or not set, renewing...");
+    return setupGmailWatch(gmail);
+  }
+  
+  console.log("[Gmail Watch] Watch still valid", {
+    expiresIn: Math.round((currentExpiration - Date.now()) / (60 * 60 * 1000)) + " hours",
+  });
+  
+  return null;
 }
