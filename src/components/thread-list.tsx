@@ -209,16 +209,12 @@ const ThreadItem = memo(function ThreadItem({
   );
 }, (prevProps, nextProps) => {
   // Only re-render if selection state or thread data actually changed
-  const prevDate = prevProps.thread.lastMessageAt instanceof Date 
-    ? prevProps.thread.lastMessageAt.getTime() 
-    : prevProps.thread.lastMessageAt 
-      ? new Date(prevProps.thread.lastMessageAt).getTime() 
-      : null;
-  const nextDate = nextProps.thread.lastMessageAt instanceof Date 
-    ? nextProps.thread.lastMessageAt.getTime() 
-    : nextProps.thread.lastMessageAt 
-      ? new Date(nextProps.thread.lastMessageAt).getTime() 
-      : null;
+  const prevDate = prevProps.thread.lastMessageAt 
+    ? new Date(prevProps.thread.lastMessageAt).getTime() 
+    : null;
+  const nextDate = nextProps.thread.lastMessageAt 
+    ? new Date(nextProps.thread.lastMessageAt).getTime() 
+    : null;
   
   return (
     prevProps.isSelected === nextProps.isSelected &&

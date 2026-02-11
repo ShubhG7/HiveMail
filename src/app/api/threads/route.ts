@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
     const sortOrder = searchParams.get("sortOrder") || "desc";
 
     // Build where clause
-    let where: any = { userId: session.user.id };
+    const where: any = { userId: session.user.id };
     
     // Filter by Gmail label (e.g., SENT, INBOX, DRAFT)
     if (label) {

@@ -10,12 +10,15 @@ interface Thread {
   id: string;
   gmailThreadId: string;
   subject: string | null;
-  summaryShort: string | null;
+  participants: string[];
+  lastMessageAt: string | null;
   category: string;
+  priority: string;
+  summaryShort: string | null;
+  needsReply: boolean;
   isRead: boolean;
   isStarred: boolean;
-  needsReply: boolean;
-  lastMessageAt: string | null;
+  messageCount: number;
   latestMessage: {
     id: string;
     snippet: string | null;
@@ -97,6 +100,7 @@ export default function SentPage() {
           threads={threads}
           selectedThreadId={selectedThreadId}
           onSelect={handleThreadSelect}
+          onRefresh={fetchSentThreads}
           loading={loading}
           pagination={pagination}
           onPageChange={(page) => setPagination((prev) => ({ ...prev, page }))}

@@ -577,7 +577,7 @@ export async function watchGmail(
   });
 
   return {
-    expiration: response.data.expiration || 0,
+    expiration: response.data.expiration ? parseInt(response.data.expiration) : 0,
     historyId: response.data.historyId || "",
   };
 }
