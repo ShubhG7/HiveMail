@@ -103,11 +103,11 @@ export async function GET() {
     // Auto-fix stuck jobs: If a RUNNING job has been running for more than 2 minutes, mark it as completed
     // This handles cases where the worker crashed or the job got stuck
     if (runningJob) {
-      const jobAge = runningJob.startedAt 
+      const jobAge = runningJob.startedAt
         ? Date.now() - new Date(runningJob.startedAt).getTime()
         : Date.now() - new Date(runningJob.createdAt).getTime();
-      const twoMinutes = 2 * 60 * 1000;
-      const isStuck = jobAge > twoMinutes;
+      const tenMinutes = 10 * 60 * 1000;
+      const isStuck = jobAge > tenMinutes;
       
       if (isStuck) {
         // Job is stuck - mark it as completed

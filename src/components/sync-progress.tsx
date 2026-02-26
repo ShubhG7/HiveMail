@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { RefreshCw, CheckCircle2, Loader2, XCircle } from "lucide-react";
@@ -29,21 +29,34 @@ interface SyncStatus {
 export function SyncProgress() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const prevIsRunningRef = useRef<boolean | null>(null);
 
   const fetchSyncStatus = useCallback(async () => {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
+
       const response = await fetch("/api/sync", {
         signal: controller.signal,
       });
-      
+
       clearTimeout(timeoutId);
-      
+
       if (response.ok) {
         const data = await response.json();
         setSyncStatus(data);
+
+        // Detect sync completion or progress updates
+        const wasRunning = prevIsRunningRef.current;
+        const isNowRunning = data.isRunning;
+        if (wasRunning === true && !isNowRunning) {
+          // Sync just completed - notify other components to refresh
+          window.dispatchEvent(new CustomEvent("sync-completed"));
+        } else if (isNowRunning && data.currentJob?.progress && data.currentJob.progress > 0) {
+          // Sync is running and making progress - notify for incremental refresh
+          window.dispatchEvent(new CustomEvent("sync-progress"));
+        }
+        prevIsRunningRef.current = isNowRunning;
       } else if (response.status === 401) {
         // User not authenticated, don't show error
         setSyncStatus(null);

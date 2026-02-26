@@ -1,5 +1,6 @@
 """Worker main entry point with FastAPI."""
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
@@ -8,7 +9,6 @@ from pydantic import BaseModel
 from sqlalchemy import text
 import structlog
 
-import structlog
 from dotenv import load_dotenv
 import os
 
@@ -346,16 +346,34 @@ async def handle_job(
     payload: JobPayload,
     x_correlation_id: Optional[str] = Header(None)
 ):
-    """Handle a sync job."""
+    """Handle a sync job.
+
+    Accepts the job and processes it in the background so the HTTP response
+    returns immediately. This prevents timeout issues when called from
+    Vercel serverless functions or through proxies with request timeouts.
+    """
     correlation_id = x_correlation_id or payload.correlationId
-    
+
     logger.info(
         "job_received",
         user_id=payload.userId,
         job_type=payload.jobType,
         correlation_id=correlation_id,
     )
-    
+
+    if payload.jobType not in ("BACKFILL", "INCREMENTAL", "PROCESS_THREAD", "PROCESS_MESSAGE"):
+        raise HTTPException(status_code=400, detail=f"Unknown job type: {payload.jobType}")
+
+    # Process the job in the background so we return immediately
+    asyncio.create_task(
+        _process_job_background(payload, correlation_id)
+    )
+
+    return {"status": "accepted", "correlationId": correlation_id}
+
+
+async def _process_job_background(payload: JobPayload, correlation_id: str):
+    """Process a job in the background."""
     try:
         if payload.jobType == "BACKFILL":
             await process_backfill_job(payload.userId, payload.metadata, correlation_id)
@@ -365,11 +383,14 @@ async def handle_job(
             await process_thread_job(payload.userId, payload.metadata, correlation_id)
         elif payload.jobType == "PROCESS_MESSAGE":
             await process_message_job(payload.userId, payload.metadata, correlation_id)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown job type: {payload.jobType}")
-        
-        return {"status": "completed", "correlationId": correlation_id}
-    
+
+        logger.info(
+            "job_completed",
+            user_id=payload.userId,
+            job_type=payload.jobType,
+            correlation_id=correlation_id,
+        )
+
     except Exception as e:
         error_message = str(e)
         error_traceback = None
@@ -378,7 +399,7 @@ async def handle_job(
             error_traceback = traceback.format_exc()
         except:
             pass
-        
+
         logger.error(
             "job_failed",
             user_id=payload.userId,
@@ -387,7 +408,7 @@ async def handle_job(
             error=error_message,
             traceback=error_traceback,
         )
-        
+
         # Update job status to failed
         job_id = payload.metadata.get("jobId") if payload.metadata else None
         if job_id:
@@ -396,13 +417,6 @@ async def handle_job(
                     update_job_status(db, job_id, "FAILED", error=error_message)
             except Exception as db_error:
                 logger.error("failed_to_update_job_status", job_id=job_id, error=str(db_error))
-        
-        # Return error response instead of raising to avoid double logging
-        return {
-            "status": "failed",
-            "correlationId": correlation_id,
-            "error": error_message
-        }
 
 
 async def process_backfill_job(

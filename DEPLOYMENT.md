@@ -2,7 +2,7 @@
 
 This guide walks you through deploying Hivemail to production. The application consists of:
 1. **Next.js Frontend** → Deploy to Vercel
-2. **Python Worker** → Deploy to GCP Cloud Run
+2. **Python Worker** → Deploy to Railway (recommended) or GCP Cloud Run
 3. **PostgreSQL Database** → Use Neon or Supabase (with pgvector)
 
 ---
@@ -63,17 +63,125 @@ openssl rand -base64 32
    - APIs & Services → OAuth consent screen
    - User Type: External
    - App name: Hivemail
+   - User support email: Your email (shubhguptarm7@gmail.com)
+   - Developer contact information: Your email
    - Scopes: Add `gmail.readonly` and `gmail.send`
+   - **Important**: Since these are sensitive scopes, you'll see a verification warning
 5. Create OAuth Credentials:
    - APIs & Services → Credentials → Create Credentials → OAuth client ID
    - Application type: Web application
    - Authorized redirect URIs:
-     - `https://your-app.vercel.app/api/auth/callback/google` (you'll update this after Vercel deployment)
+     - For local development: `http://localhost:3000/api/auth/callback/google`
+     - For production: `https://your-app.vercel.app/api/auth/callback/google` (you'll update this after Vercel deployment)
 6. Copy **Client ID** and **Client Secret**
+
+### Handling the "Google hasn't verified this app" Warning
+
+Since Hivemail requests sensitive Gmail scopes (`gmail.readonly` and `gmail.send`), Google shows a verification warning. Here's how to handle it:
+
+#### Option A: For Development/Testing (Quick Fix)
+
+**Add Test Users** (Recommended for development):
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Navigate to: **APIs & Services → OAuth consent screen**
+3. Scroll down to **"Test users"** section
+4. Click **"+ ADD USERS"**
+5. Add your Google account email (shubhguptarm7@gmail.com) and any other test accounts
+6. Click **"SAVE"**
+
+**Note**: Test users can bypass the verification warning. You can add up to 100 test users. This is perfect for development and testing.
+
+#### Option B: For Production (Full Verification)
+
+To remove the warning for all users, you need to submit your app for Google's OAuth verification:
+
+1. **Complete OAuth Consent Screen**:
+   - Go to **APIs & Services → OAuth consent screen**
+   - Fill in all required fields:
+     - App name, logo (optional but recommended)
+     - App domain (your Vercel domain)
+     - Authorized domains
+     - Developer contact information
+     - Privacy policy URL (required for verification)
+     - Terms of service URL (required for verification)
+
+2. **Create Privacy Policy & Terms of Service**:
+   - You must have publicly accessible privacy policy and terms of service pages
+   - These should explain how you use Gmail data
+   - Example: `https://your-app.vercel.app/privacy` and `https://your-app.vercel.app/terms`
+
+3. **Submit for Verification**:
+   - Click **"PUBLISH APP"** button (or "SUBMIT FOR VERIFICATION" if available)
+   - Google will review your app (can take 1-2 weeks)
+   - You may need to provide:
+     - Video demonstration of your app
+     - Explanation of why you need Gmail scopes
+     - Security assessment (for sensitive scopes)
+
+4. **During Review**:
+   - Your app will be in "Testing" mode
+   - Only test users can sign in
+   - After approval, all users can sign in without warnings
+
+**For now, use Option A (Test Users) to continue development without waiting for verification.**
 
 ---
 
-## Step 4: Deploy Python Worker to GCP Cloud Run
+## Step 4: Deploy Python Worker
+
+### Option A: Railway (Recommended - Easier Setup)
+
+Railway is simpler than GCP and doesn't require billing setup.
+
+#### 4.1 Create Railway Account
+
+1. Go to [railway.app](https://railway.app) and sign in with GitHub
+2. Click "New Project"
+3. Select "Deploy from GitHub repo"
+4. Choose your Hivemail repository
+
+#### 4.2 Configure Service
+
+1. Railway will auto-detect the Dockerfile in the `worker/` directory
+2. If not detected, go to Settings → Source → Set Root Directory to `worker/`
+3. Railway will automatically build and deploy
+
+#### 4.3 Set Environment Variables
+
+In Railway Dashboard → Your Service → Variables, add:
+
+```
+DATABASE_URL=postgresql://neondb_owner:npg_0vXqDgl1Pdbu@ep-winter-water-ai8jqrco-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+ENCRYPTION_MASTER_KEY=your-encryption-master-key-here
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+WORKER_BATCH_SIZE=50
+WORKER_MAX_RETRIES=3
+DEFAULT_LLM_MODEL=gemini-2.5-flash
+```
+
+**Important:** Use the same `ENCRYPTION_MASTER_KEY` as in Vercel!
+
+#### 4.4 Get Worker URL
+
+1. After deployment, Railway will provide a URL like: `https://your-service.up.railway.app`
+2. Copy this URL - you'll need it for Vercel
+
+#### 4.5 Update Vercel Environment Variables
+
+1. Go to Vercel Dashboard → Your Project → Settings → Environment Variables
+2. Add or update:
+   ```
+   WORKER_BASE_URL=https://your-service.up.railway.app
+   ```
+3. Redeploy Vercel (or it will auto-redeploy)
+
+**That's it!** Railway handles everything automatically. The worker should now be accessible.
+
+---
+
+### Option B: GCP Cloud Run (Requires Billing)
 
 ### 4.1 Create GCP Project
 
@@ -299,9 +407,61 @@ Alternatively, you can run this from your local machine pointing to the producti
 - Check service account permissions
 
 ### OAuth Errors
-- Verify redirect URI matches exactly in Google Cloud Console
-- Check that `NEXTAUTH_URL` matches your Vercel domain
-- Ensure Gmail API is enabled
+
+#### "Authentication Error: There is a problem with the server configuration"
+
+This error typically indicates missing or incorrect environment variables. Check the following:
+
+1. **Verify Environment Variables are Set:**
+   ```bash
+   # Check your .env.local file (for local development) or Vercel environment variables
+   # Required variables:
+   - NEXTAUTH_URL (must match your app URL exactly)
+   - NEXTAUTH_SECRET (must be a valid secret, generate with: openssl rand -base64 32)
+   - GOOGLE_CLIENT_ID
+   - GOOGLE_CLIENT_SECRET
+   ```
+
+2. **For Local Development:**
+   - Ensure `.env.local` exists in the project root
+   - `NEXTAUTH_URL` should be `http://localhost:3000` (or your local port)
+   - Restart your Next.js dev server after changing environment variables
+
+3. **For Production (Vercel):**
+   - Go to Vercel Dashboard → Your Project → Settings → Environment Variables
+   - Verify all variables are set correctly
+   - `NEXTAUTH_URL` must match your Vercel domain exactly (e.g., `https://your-app.vercel.app`)
+   - Redeploy after adding/changing environment variables
+
+4. **Verify Google OAuth Configuration:**
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Navigate to: **APIs & Services → Credentials**
+   - Check your OAuth 2.0 Client ID
+   - Verify **Authorized redirect URIs** includes:
+     - For local: `http://localhost:3000/api/auth/callback/google`
+     - For production: `https://your-app.vercel.app/api/auth/callback/google`
+   - Ensure the redirect URI matches **exactly** (including http/https, port, trailing slashes)
+
+5. **Check OAuth Consent Screen:**
+   - Go to **APIs & Services → OAuth consent screen**
+   - Verify app is in "Testing" mode (for development)
+   - Ensure your email is added as a test user
+   - Verify scopes `gmail.readonly` and `gmail.send` are added
+
+6. **Verify Gmail API is Enabled:**
+   - Go to **APIs & Services → Library**
+   - Search for "Gmail API"
+   - Ensure it's enabled
+
+7. **Check Server Logs:**
+   - For local: Check terminal where Next.js is running
+   - For Vercel: Go to Vercel Dashboard → Your Project → Logs
+   - Look for error messages about missing environment variables
+
+#### Other OAuth Errors
+- **"Access Denied"**: User is not in the test users list (add them in OAuth consent screen)
+- **"Invalid redirect URI"**: Redirect URI in Google Console doesn't match your app URL
+- **"Invalid client"**: GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET is incorrect
 
 ### Database Connection Issues
 - Verify `DATABASE_URL` is correct

@@ -85,6 +85,28 @@ export default function InboxPage() {
     fetchThreads();
   }, [fetchThreads]);
 
+  // Re-fetch threads when sync completes or makes progress
+  useEffect(() => {
+    let lastProgressRefresh = 0;
+    const handleSyncCompleted = () => {
+      fetchThreads();
+    };
+    const handleSyncProgress = () => {
+      // Throttle progress refreshes to at most once every 10 seconds
+      const now = Date.now();
+      if (now - lastProgressRefresh > 10000) {
+        lastProgressRefresh = now;
+        fetchThreads();
+      }
+    };
+    window.addEventListener("sync-completed", handleSyncCompleted);
+    window.addEventListener("sync-progress", handleSyncProgress);
+    return () => {
+      window.removeEventListener("sync-completed", handleSyncCompleted);
+      window.removeEventListener("sync-progress", handleSyncProgress);
+    };
+  }, [fetchThreads]);
+
   const handleThreadSelect = useCallback((threadId: string) => {
     // Only update if different thread and not already selecting this one
     if (selectedThreadId === threadId || selectingRef.current === threadId) return;

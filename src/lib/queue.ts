@@ -112,7 +112,7 @@ async function triggerWorker(payload: SyncJobPayload): Promise<void> {
     if (process.env.GCP_PROJECT_ID && process.env.GCP_QUEUE_NAME) {
       await enqueueCloudTask(payload);
     } else {
-      // Direct HTTP call for local development
+      // Direct HTTP call to worker (worker processes in background and returns immediately)
       const url = `${workerUrl}/api/jobs`;
       console.log(`[Queue] Triggering worker at ${url}`, {
         userId: payload.userId,
@@ -120,9 +120,8 @@ async function triggerWorker(payload: SyncJobPayload): Promise<void> {
         correlationId: payload.correlationId,
       });
 
-      // Add timeout and better error handling
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout (worker returns immediately)
 
       try {
         const response = await fetch(url, {
@@ -138,31 +137,24 @@ async function triggerWorker(payload: SyncJobPayload): Promise<void> {
         clearTimeout(timeoutId);
 
         const result = await response.json();
-        
+
         if (!response.ok) {
           console.error(`[Queue] Worker error response:`, {
             status: response.status,
             statusText: response.statusText,
             body: result,
           });
-          // Don't throw - let the job stay in DB for retry
-          // The worker will update the job status to FAILED
           return;
         }
 
-        console.log(`[Queue] Worker response:`, result);
-        
-        // Check if worker returned a failed status
-        if (result.status === "failed") {
-          console.error(`[Queue] Worker reported job failure:`, result.error);
-          // Job status will be updated by worker, don't throw here
-        }
+        console.log(`[Queue] Worker accepted job:`, result);
       } catch (error: any) {
         clearTimeout(timeoutId);
         if (error.name === 'AbortError') {
-          throw new Error('Worker request timed out after 30 seconds');
+          console.error('[Queue] Worker request timed out - worker may be unreachable');
+        } else {
+          throw error;
         }
-        throw error;
       }
     }
   } catch (error) {
